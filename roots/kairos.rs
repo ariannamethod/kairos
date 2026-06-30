@@ -2462,7 +2462,7 @@ impl SyntropyTracker {
         }
     }
 
-    fn decide(&self, cfg: &Config, model_stage: i32, adult_stage: usize) -> SyntropyDecision {
+    fn decide(&self, cfg: &Config, _model_stage: i32, _adult_stage: usize) -> SyntropyDecision {
         let mut d = SyntropyDecision {
             lr_multiplier: 1.0, temp_offset: 0.0, accum_override: 0,
             delta_grow_override: None, action: "steady".into(),
@@ -2492,29 +2492,7 @@ impl SyntropyTracker {
             d.action = "explore".into();
         }
 
-        // Divide: adult stage + sustained high entropy + falling syntropy
-        if model_stage as usize >= adult_stage && self.entropy_history.len() >= cfg.syntropy_window {
-            let high_count = self.entropy_history.iter().filter(|&&e| e > cfg.entropy_high).count();
-            if high_count > cfg.syntropy_window * 3 / 4 && trend < -0.01 {
-                d.lr_multiplier = cfg.syntropy_lr_dampen;
-                d.action = "divide".into();
-            }
-        }
-
         d
-    }
-
-    fn should_hibernate(&self, peers: &[(String, f64, f64)]) -> bool {
-        if peers.is_empty() { return false; }
-        // A peer has syntropy > 0.05 (thriving) and we're on a plateau
-        let thriving_peer = peers.iter().any(|(_, syn, _)| *syn > 0.05);
-        if thriving_peer && self.burst_history.len() >= 8 {
-            let sum: f64 = self.burst_history[self.burst_history.len()-8..].iter()
-                .map(|b| b.loss_after - b.loss_before).sum();
-            let avg_delta = sum / 8.0;
-            if avg_delta.abs() < 0.01 { return true; }
-        }
-        false
     }
 }
 
@@ -2596,8 +2574,7 @@ impl SwarmRegistry {
         let conn = Connection::open(&db_path)?;
         conn.execute_batch("
             PRAGMA journal_mode=WAL;
-            CREATE TABLE IF NOT EXISTS organisms(id TEXT PRIMARY KEY, pid INTEGER, stage INTEGER, n_params INTEGER, syntropy REAL, entropy REAL, last_heartbeat REAL, parent_id TEXT, status TEXT DEFAULT 'alive', gamma_direction BLOB, gamma_magnitude REAL, rrpram_signature BLOB, element TEXT);
-            CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT, from_id TEXT, to_id TEXT, type TEXT, payload TEXT, ts REAL);
+            CREATE TABLE IF NOT EXISTS organisms(id TEXT PRIMARY KEY, pid INTEGER, stage INTEGER, n_params INTEGER, syntropy REAL, entropy REAL, last_heartbeat REAL, status TEXT DEFAULT 'alive', gamma_direction BLOB, gamma_magnitude REAL, rrpram_signature BLOB, element TEXT);
         ")?;
         // Migration for existing databases
         conn.execute_batch("ALTER TABLE organisms ADD COLUMN element TEXT").ok();
@@ -2632,9 +2609,7 @@ impl SwarmRegistry {
     }
 
     fn unregister(&self) {
-        if let Some(ref db) = self.mesh_db {
-            db.execute("UPDATE organisms SET status='dead' WHERE id=?1", params![self.organism_id]).ok();
-        }
+        // Kairos is immortal — no death marker; the Connection closes on drop.
     }
 }
 
@@ -2947,23 +2922,6 @@ fn background_trainer(
 
         eprintln!("[syntropy] action={} | trend={:.4} | lr_mul={:.2}",
                   decision.action, syntracker.syntropy_trend, decision.lr_multiplier);
-
-        // Handle ecology actions
-        if decision.action == "divide" {
-            eprintln!("[ecology] DIVIDE action — spawning child (not implemented in this session)");
-            // TODO: spawn child process via std::process::Command
-        }
-
-        // Check hibernation
-        {
-            let peers = swarm.lock().map(|sw| sw.discover_peers()).unwrap_or_default();
-            if syntracker.should_hibernate(&peers) {
-                eprintln!("[ecology] HIBERNATION — organism going to sleep");
-                save_checkpoint(&m, &cfg.ckpt_path).ok();
-                if let Ok(sw) = swarm.lock() { sw.unregister(); }
-                break;
-            }
-        }
 
         // Immune system: snapshot gamma direction
         let (pre_dir, pre_mag) = m.gamma_contrastive_projection();

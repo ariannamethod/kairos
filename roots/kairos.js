@@ -3026,7 +3026,6 @@ class SyntropyTracker {
         this.lastAction = "none";
         this.burstHistory = [];
         this.modelStage = 0;          // current growth stage (set during measure)
-        this._lastMitosisTime = 0.0;  // cooldown for divide
         this._swarmInfo = null;        // peer state from swarm (set externally)
     }
 
@@ -3118,22 +3117,8 @@ class SyntropyTracker {
             tempOffset = 0.0;
         }
 
-        // CASE 6: Adult + sustained overload -> divide (mitosis)
-        const maxStage = CFG.growthStages.length - 1;
-        if (this.modelStage >= maxStage &&
-                this._isSustainedOverload() &&
-                (Date.now() / 1000) - this._lastMitosisTime > 300) {
-            action = "divide";
-            lrMultiplier = CFG.syntropyLrDampen; // slow down while preparing to split
-        }
-
-        // CASE 7: Plateau + young peer thriving -> hibernate (cooperative scheduling)
-        if (action === "steady" && this._shouldHibernate()) {
-            action = "hibernate";
-        }
-
         // SELF-META-LEARNING: downgrade actions that historically hurt loss
-        if (action !== "divide" && action !== "hibernate" && this.burstHistory.length >= 4) {
+        if (this.burstHistory.length >= 4) {
             const eff = this.actionEffectiveness(action);
             if (eff.count > 0 && eff.mean > 0.05) {
                 if (action === "amplify") {
@@ -3165,36 +3150,6 @@ class SyntropyTracker {
         });
     }
 
-    _isSustainedOverload() {
-        // High entropy for >75% of window + falling syntropy = overloaded.
-        if (this.entropyHistory.length < CFG.syntropyWindow) return false;
-        const recent = this.entropyHistory.slice(-CFG.syntropyWindow);
-        let highCount = 0;
-        for (const e of recent) {
-            if (e > CFG.entropyHigh) highCount++;
-        }
-        return highCount > CFG.syntropyWindow * 0.75 && this.syntropyTrend < -0.02;
-    }
-
-    _shouldHibernate() {
-        // Should this organism sleep to give resources to peers?
-        // Conditions: loss on plateau + a peer is in amplify/boost state.
-        if (!this._swarmInfo || !this._swarmInfo.peers || this._swarmInfo.peers.length === 0) {
-            return false;
-        }
-        for (const peer of this._swarmInfo.peers) {
-            if ((peer.syntropy || 0) > 0.05) {
-                // A young peer is thriving. If we're stale, hibernate.
-                if (this.burstHistory.length >= 8) {
-                    const recentDeltas = this.burstHistory.slice(-8).map(
-                        b => b.lossAfter - b.lossBefore);
-                    const avgDelta = recentDeltas.reduce((a, v) => a + v, 0) / recentDeltas.length;
-                    if (Math.abs(avgDelta) < 0.01) return true; // loss plateau
-                }
-            }
-        }
-        return false;
-    }
 }
 
 // And lo, the buffer shall measure not just bytes but novelty,
@@ -3275,12 +3230,6 @@ class SwarmRegistry {
                     stage: 0, nParams: 0, syntropy: 0, entropy: 0,
                     lastSeen: Date.now(), status: "alive",
                 });
-            } else if (msg.type === "dead") {
-                this.peers.delete(msg.id);
-            } else if (msg.type === "sleeping") {
-                if (this.peers.has(msg.id)) {
-                    this.peers.get(msg.id).status = "sleeping";
-                }
             }
         };
         this.channel.addEventListener("message", this._onMessage);
@@ -3308,14 +3257,8 @@ class SwarmRegistry {
         return alive;
     }
 
-    markHibernating() {
-        if (!this.channel) return;
-        this.channel.postMessage({ type: "sleeping", id: this.organismId });
-    }
-
     unregister() {
         if (!this.channel) return;
-        this.channel.postMessage({ type: "dead", id: this.organismId });
         if (this._onMessage) {
             this.channel.removeEventListener("message", this._onMessage);
         }
@@ -3331,35 +3274,6 @@ async function idbPut(storeName, key, value) {
 
 async function idbGet(storeName, key) {
     return await DB.loadKV(`${storeName}:${key}`);
-}
-
-async function performMitosis(model, tok, swarm, syntracker) {
-    // And lo, the organism divides. In the browser, mitosis = opening a new tab.
-    const childId = `org_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-
-    // Save birth config to IndexedDB
-    const birth = {
-        organism_id: childId,
-        parent_id: swarm.organismId,
-        burst_history: syntracker.burstHistory,
-    };
-    await idbPut("births", childId, birth);
-
-    // Open new tab — it will read birth config on startup
-    window.open(`${location.href.split("?")[0]}?organism=${childId}`, "_blank");
-
-    syntracker._lastMitosisTime = Date.now() / 1000;
-    logUI(`[ecology] Child ${childId} spawned (new tab)`);
-    return childId;
-}
-
-function performHibernation(model, tok, swarm) {
-    // And lo, the organism sleeps. In the browser: stop training, save state.
-    // The tab stays open but stops consuming CPU.
-    logUI(`[ecology] HIBERNATION — organism ${swarm.organismId} going to sleep`);
-    swarm.markHibernating();
-    _trainerRunning = false;
-    setStatus("hibernating");
 }
 
 // ============================================================
@@ -3527,16 +3441,6 @@ async function trainerTick() {
                         `ontogenesis:stage=${_model.currentGrowthStage()}`);
                 }
 
-                // Ecology: mitosis / hibernation
-                if (_swarm && action === "divide") {
-                    logUI("[ecology] MITOSIS triggered — organism overloaded, spawning child");
-                    await performMitosis(_model, _tok, _swarm, _syntracker);
-                }
-                if (_swarm && action === "hibernate") {
-                    performHibernation(_model, _tok, _swarm);
-                    await saveCheckpoint(_model, _tok);
-                    return; // exit training loop
-                }
 
                 setStatus("alive");
             }

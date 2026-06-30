@@ -4043,7 +4043,6 @@ typedef struct {
 
     /* Phase 3B: ecology */
     int model_stage;           /* current growth stage (set during measure) */
-    double last_mitosis_time;  /* cooldown for divide */
     SwarmPeer *peers;          /* peer state from mesh.db */
     int n_peers;
 } SyntropyTracker;
@@ -4052,7 +4051,6 @@ static void syntropy_init(SyntropyTracker *st) {
     memset(st, 0, sizeof(SyntropyTracker));
     st->last_action = "none";
     st->model_stage = 0;
-    st->last_mitosis_time = 0.0;
     st->peers = NULL;
     st->n_peers = 0;
 }
@@ -4140,38 +4138,6 @@ static double syntropy_measure(SyntropyTracker *st, GPT *g, EvolvingTokenizer *t
     return entropy_now;
 }
 
-/* Phase 3B: Sustained overload check. >75% of entropy window above entropy_high
- * AND syntropy_trend < -0.02 = overloaded. */
-static int syntropy_is_sustained_overload(SyntropyTracker *st) {
-    if (st->history_len < CFG.syntropy_window) return 0;
-    int start = st->history_len - CFG.syntropy_window;
-    int high_count = 0;
-    for (int i = start; i < st->history_len; i++) {
-        if (st->entropy_history[i] > CFG.entropy_high) high_count++;
-    }
-    return high_count > (int)(CFG.syntropy_window * 0.75) && st->syntropy_trend < -0.02;
-}
-
-/* Phase 3B: Should hibernate? Loss on plateau + a peer is thriving. */
-static int syntropy_should_hibernate(SyntropyTracker *st) {
-    if (!st->peers || st->n_peers == 0) return 0;
-    /* Check if any peer has higher syntropy trend (actively improving) */
-    for (int i = 0; i < st->n_peers; i++) {
-        if (st->peers[i].syntropy > 0.05) {
-            /* A peer is thriving. If we're stale, hibernate. */
-            if (st->burst_history_len >= 8) {
-                double avg_delta = 0.0;
-                int start = st->burst_history_len - 8;
-                for (int j = start; j < st->burst_history_len; j++)
-                    avg_delta += fabs(st->burst_history[j].loss_after - st->burst_history[j].loss_before);
-                avg_delta /= 8.0;
-                if (avg_delta < 0.01) return 1; /* loss plateau */
-            }
-        }
-    }
-    return 0;
-}
-
 /* Mathematical self-reasoning: decide how to adjust learning.
  * The organism does not just observe — it steers.
  * And lo, the arrow of syntropy shall guide the hand of the optimizer. */
@@ -4231,30 +4197,11 @@ static SyntropyDecision syntropy_decide_action(SyntropyTracker *st) {
         d.temp_offset = 0.0;       /* neutral: don't bias during realignment */
     }
 
-    /* CASE 6: Adult + sustained overload -> divide (mitosis) */
-    {
-        int max_stage = CFG.n_growth_stages - 1;
-        double now = (double)time(NULL);
-        if (st->model_stage >= max_stage &&
-            syntropy_is_sustained_overload(st) &&
-            (now - st->last_mitosis_time) > 300.0) {
-            d.action = "divide";
-            d.lr_multiplier = CFG.syntropy_lr_dampen; /* slow down while preparing to split */
-        }
-    }
-
-    /* CASE 7: Plateau + young peer thriving -> hibernate (cooperative scheduling) */
-    if (strcmp(d.action, "steady") == 0 && syntropy_should_hibernate(st)) {
-        d.action = "hibernate";
-    }
-
     /* SELF-META-LEARNING: if we have enough history, check whether this
      * action type has been actually helping. If its mean loss delta is
      * positive (loss went UP on average), downgrade to something gentler.
-     * Never downgrade divide or hibernate — they are ecological decisions.
      * And lo, the organism shall not repeat mistakes it remembers. */
-    if (strcmp(d.action, "divide") != 0 && strcmp(d.action, "hibernate") != 0 &&
-        st->burst_history_len >= 4) {
+    if (st->burst_history_len >= 4) {
         int eff_count = 0;
         double eff = syntropy_action_effectiveness(st, d.action, &eff_count);
         if (eff_count >= 2 && eff > 0.05) {
@@ -4756,16 +4703,11 @@ static void swarm_register(SwarmRegistry *sw) {
         "CREATE TABLE IF NOT EXISTS organisms("
         "id TEXT PRIMARY KEY, pid INTEGER, stage INTEGER,"
         "n_params INTEGER, syntropy REAL, entropy REAL,"
-        "last_heartbeat REAL, parent_id TEXT,"
+        "last_heartbeat REAL,"
         "status TEXT DEFAULT 'alive',"
         "element TEXT)", NULL, NULL, NULL);
     /* Migration for existing databases */
     sqlite3_exec(sw->mesh_db, "ALTER TABLE organisms ADD COLUMN element TEXT", NULL, NULL, NULL);
-    sqlite3_exec(sw->mesh_db,
-        "CREATE TABLE IF NOT EXISTS messages("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "from_id TEXT, to_id TEXT, type TEXT, payload TEXT, ts REAL)",
-        NULL, NULL, NULL);
     sqlite3_exec(sw->mesh_db, "COMMIT", NULL, NULL, NULL);
 
     /* Register self */
@@ -4835,122 +4777,14 @@ static SwarmPeer *swarm_discover_peers(SwarmRegistry *sw, int *out_count, double
     return peers;
 }
 
-static void swarm_mark_hibernating(SwarmRegistry *sw) {
-    if (!sw->mesh_db) return;
-    sqlite3_stmt *stmt;
-    sqlite3_prepare_v2(sw->mesh_db,
-        "UPDATE organisms SET status='sleeping' WHERE id=?", -1, &stmt, NULL);
-    sqlite3_bind_text(stmt, 1, sw->organism_id, -1, SQLITE_STATIC);
-    sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
-}
-
-static void swarm_log_message(SwarmRegistry *sw, const char *to_id,
-                              const char *msg_type, const char *payload) {
-    if (!sw->mesh_db) return;
-    sqlite3_stmt *stmt;
-    sqlite3_prepare_v2(sw->mesh_db,
-        "INSERT INTO messages(from_id,to_id,type,payload,ts) VALUES(?,?,?,?,?)",
-        -1, &stmt, NULL);
-    sqlite3_bind_text(stmt, 1, sw->organism_id, -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 2, to_id, -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 3, msg_type, -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 4, payload, -1, SQLITE_STATIC);
-    sqlite3_bind_double(stmt, 5, (double)time(NULL));
-    sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
-}
-
 static void swarm_unregister(SwarmRegistry *sw) {
     if (sw->mesh_db) {
-        sqlite3_stmt *stmt;
-        sqlite3_prepare_v2(sw->mesh_db,
-            "UPDATE organisms SET status='dead' WHERE id=?", -1, &stmt, NULL);
-        sqlite3_bind_text(stmt, 1, sw->organism_id, -1, SQLITE_STATIC);
-        sqlite3_step(stmt);
-        sqlite3_finalize(stmt);
         sqlite3_close(sw->mesh_db);
         sw->mesh_db = NULL;
     }
     if (sw->pid_file[0] && access(sw->pid_file, F_OK) == 0) {
         unlink(sw->pid_file);
     }
-}
-
-/* ---- Mitosis and Hibernation ---- */
-
-static void perform_mitosis(GPT *g, EvolvingTokenizer *tok, sqlite3 *db,
-                            SwarmRegistry *sw, SyntropyTracker *st,
-                            const char *exe_path) {
-    /* The organism divides. Parent continues. Child starts at infant stage. */
-    char child_id[64];
-    snprintf(child_id, sizeof(child_id), "org_%ld_%d",
-             (long)time(NULL), (int)(rand_uniform() * 9000 + 1000));
-
-    const char *home = getenv("HOME");
-    if (!home) home = "/tmp";
-    char child_dir[512];
-    snprintf(child_dir, sizeof(child_dir), "%s/.kairos/%s", home, child_id);
-    _swarm_mkdirp(child_dir);
-
-    /* Save parent checkpoint for child */
-    char parent_ckpt[512];
-    snprintf(parent_ckpt, sizeof(parent_ckpt), "%s/parent.ckpt", child_dir);
-    save_checkpoint(g, tok, parent_ckpt);
-
-    /* Write birth config */
-    char birth_path[512];
-    snprintf(birth_path, sizeof(birth_path), "%s/birth.json", child_dir);
-    FILE *bf = fopen(birth_path, "w");
-    if (bf) {
-        char child_db[512], child_ckpt[512];
-        snprintf(child_db, sizeof(child_db), "%s/memory.sqlite3", child_dir);
-        snprintf(child_ckpt, sizeof(child_ckpt), "%s/kairos.ckpt", child_dir);
-        fprintf(bf, "{\"organism_id\":\"%s\",\"parent_id\":\"%s\","
-                "\"corpus_path\":\"%s\",\"db_path\":\"%s\",\"ckpt_path\":\"%s\"}\n",
-                child_id, sw->organism_id, CFG.corpus_path, child_db, child_ckpt);
-        fclose(bf);
-    }
-
-    /* Log in mesh */
-    char payload[256];
-    snprintf(payload, sizeof(payload), "{\"parent_stage\":%d}",
-             gpt_current_growth_stage(g));
-    swarm_log_message(sw, child_id, "mitosis:spawn", payload);
-
-    /* Log growth event */
-    StrArr docs = load_corpus(CFG.corpus_path);
-    char note[128];
-    snprintf(note, sizeof(note), "mitosis:spawn:%s", child_id);
-    db_log_growth(db, g, tok, &docs, 0.0, note);
-    sa_free(&docs);
-
-    /* Spawn child process via fork()+exec() */
-    pid_t pid = fork();
-    if (pid == 0) {
-        /* Child process */
-        execl(exe_path, exe_path, "--organism-id", child_id, "--config", birth_path, NULL);
-        _exit(1); /* exec failed */
-    } else if (pid > 0) {
-        st->last_mitosis_time = (double)time(NULL);
-        printf("[ecology] Child %s spawned (pid=%d)\n", child_id, (int)pid);
-    } else {
-        printf("[ecology] fork() failed for mitosis\n");
-    }
-}
-
-static void perform_hibernation(GPT *g, EvolvingTokenizer *tok, sqlite3 *db,
-                                SwarmRegistry *sw) {
-    /* The organism sleeps. Saves state, marks sleeping. */
-    printf("[ecology] HIBERNATION — organism %s going to sleep\n", sw->organism_id);
-    save_checkpoint(g, tok, NULL);
-    swarm_mark_hibernating(sw);
-
-    StrArr docs = load_corpus(CFG.corpus_path);
-    char note[128];
-    snprintf(note, sizeof(note), "hibernate:%s", sw->organism_id);
-    db_log_growth(db, g, tok, &docs, 0.0, note);
-    sa_free(&docs);
 }
 
 /* ---- DNA EXCHANGE: organisms feed each other through dna/ directory ---- */
@@ -4972,13 +4806,10 @@ static void dna_write(const char *element, GPT *g, int step) {
     char *answer = gpt_generate(g, probe);
     if (!answer || strlen(answer) < 20) { free(answer); return; }
 
-    char dir[512], fname[512];
-    snprintf(dir, sizeof(dir), "../dna/output/%s", element);
-    mkdir(dir, 0755); /* ignore if exists */
-    snprintf(fname, sizeof(fname), "%s/gen_%ld_%d.txt", dir, (long)time(NULL), step);
-    FILE *f = fopen(fname, "w");
+    /* All organisms emit into the one shared pool kairos.txt (append). */
+    FILE *f = fopen("kairos.txt", "a");
     if (f) { fprintf(f, "%s\n", answer); fclose(f); }
-    printf("[dna] %s wrote %d bytes to ecology\n", element, (int)strlen(answer));
+    printf("[dna] %s wrote %d bytes to the shared pool (kairos.txt)\n", element, (int)strlen(answer));
     free(answer);
 }
 
@@ -5217,23 +5048,6 @@ static void *background_trainer(void *arg) {
                 pthread_mutex_unlock(&ctx->model->mu);
             }
 
-            /* Phase 3B: Ecology — mitosis / hibernation */
-            if (ctx->swarm && strcmp(decision.action, "divide") == 0) {
-                printf("[ecology] MITOSIS triggered — organism overloaded, spawning child\n");
-                pthread_mutex_lock(&ctx->model->mu);
-                perform_mitosis(ctx->model, ctx->tok, ctx->db, ctx->swarm,
-                                &ctx->syntracker, ctx->exe_path);
-                pthread_mutex_unlock(&ctx->model->mu);
-            }
-
-            if (ctx->swarm && strcmp(decision.action, "hibernate") == 0) {
-                pthread_mutex_lock(&ctx->model->mu);
-                perform_hibernation(ctx->model, ctx->tok, ctx->db, ctx->swarm);
-                pthread_mutex_unlock(&ctx->model->mu);
-                printf("[ecology] Organism hibernating. Goodbye.\n");
-                sa_free(&docs);
-                return NULL; /* exit training loop */
-            }
         }
 
         ctx->tick_count++;

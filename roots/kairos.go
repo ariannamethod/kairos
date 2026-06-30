@@ -14,7 +14,6 @@ import (
 	"math"
 	"math/rand"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -5059,7 +5058,6 @@ type SyntropyTracker struct {
 	LastAction       string    // what was decided last time
 	BurstHistory     []BurstRecord // last 16 burst outcomes — training efficiency memory
 	ModelStage       int       // current growth stage (set during measure)
-	LastMitosisTime  float64   // cooldown for divide
 	SwarmInfo        *SwarmPeerInfo // peer state from mesh.db (set externally)
 }
 
@@ -5068,11 +5066,6 @@ type SyntropyTracker struct {
 func NewSyntropyTracker() *SyntropyTracker {
 	return &SyntropyTracker{
 		LastAction: "none",
-		// Seed birth time so the 300s divide cooldown (CASE 6, now-LastMitosisTime>300)
-		// also guards the FIRST division. Zero-init made now(epoch-sec)-0 always >300,
-		// so seed organisms and every mitosis child could divide instantly. Applies
-		// uniformly: the seed tracker here and each child's fresh tracker (backgroundTrainer).
-		LastMitosisTime: float64(time.Now().UnixMilli()) / 1000.0,
 	}
 }
 
@@ -5083,34 +5076,6 @@ func (st *SyntropyTracker) RecordBurst(action string, lossBefore, lossAfter floa
 	if len(st.BurstHistory) > 16 {
 		st.BurstHistory = st.BurstHistory[len(st.BurstHistory)-16:]
 	}
-}
-
-// relieveOverload drops the high-loss bursts that triggered a division so the
-// parent must re-accumulate genuine overload before dividing again. Without it,
-// divide does not lower the loss it keyed on, so the parent re-fires every
-// cooldown on the same stale overload — division now relieves the overwhelm
-// (cascade governor, audit design item (c)).
-func (st *SyntropyTracker) relieveOverload() {
-	// loss path: drop the high-loss bursts that triggered this divide
-	kb := st.BurstHistory[:0]
-	for _, br := range st.BurstHistory {
-		if br.LossAfter < CFG.OverloadLossHigh {
-			kb = append(kb, br)
-		}
-	}
-	st.BurstHistory = kb
-	// entropy path (audit C2): drop the high-entropy samples too, so
-	// entropyOverload() also clears. isSustainedOverload = entropy OR loss, and
-	// §9 Air divided on the entropy path (e=true l=false) — relieving only loss
-	// left an entropy-overloaded parent/child re-firing every cooldown. Division
-	// now relieves BOTH overwhelm modes.
-	ke := st.EntropyHistory[:0]
-	for _, e := range st.EntropyHistory {
-		if e <= CFG.EntropyHigh {
-			ke = append(ke, e)
-		}
-	}
-	st.EntropyHistory = ke
 }
 
 // ActionEffectiveness returns the mean loss delta for a given action type.
@@ -5245,24 +5210,8 @@ func (st *SyntropyTracker) DecideAction() SyntropyDecision {
 		action = "realign"
 	}
 
-	// CASE 6: Adult + sustained overload → divide (mitosis)
-	maxStage := len(CFG.GrowthStages) - 1
-	now := float64(time.Now().UnixMilli()) / 1000.0
-	if st.ModelStage >= maxStage &&
-		st.isSustainedOverload() &&
-		st.FieldDeviation < CFG.FieldDeviationCeiling && // sanity: don't fork a parent that has drifted off the corpus manifold
-		now-st.LastMitosisTime > 300 {
-		action = "divide"
-		lrMultiplier = CFG.SyntropyLRDampen // slow down while preparing to split
-	}
-
-	// CASE 7: Plateau + young peer thriving → hibernate (cooperative scheduling)
-	if action == "steady" && st.shouldHibernate() {
-		action = "hibernate"
-	}
-
 	// SELF-META-LEARNING: check if this action historically hurts
-	if action != "divide" && action != "hibernate" && len(st.BurstHistory) >= 4 {
+	if len(st.BurstHistory) >= 4 {
 		eff, count := st.ActionEffectiveness(action)
 		if count >= 2 && eff > 0.05 {
 			// This action has been consistently making loss WORSE — downgrade
@@ -5398,35 +5347,6 @@ func (st *SyntropyTracker) OverloadDebug() string {
 		st.isSustainedOverload(), st.entropyOverload(), st.lossOverload())
 }
 
-// shouldHibernate returns true if a peer has syntropy > 0.05 AND this organism's last 8 burst deltas avg < 0.01.
-func (st *SyntropyTracker) shouldHibernate() bool {
-	if st.SwarmInfo == nil || len(st.SwarmInfo.Peers) == 0 {
-		return false
-	}
-	// Check if any peer has higher syntropy trend (actively improving)
-	for _, peer := range st.SwarmInfo.Peers {
-		synVal, ok := peer["syntropy"]
-		if !ok {
-			continue
-		}
-		synFloat, _ := synVal.(float64)
-		if synFloat > 0.05 {
-			// A young peer is thriving. If we're stale, hibernate.
-			if len(st.BurstHistory) >= 8 {
-				sum := 0.0
-				for _, b := range st.BurstHistory[len(st.BurstHistory)-8:] {
-					sum += b.LossAfter - b.LossBefore
-				}
-				avgDelta := sum / 8.0
-				if math.Abs(avgDelta) < 0.01 { // loss plateau
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
 // ============================================================
 // 9.7) SWARM ECOLOGY — the organism learns it is not alone
 // ============================================================
@@ -5481,18 +5401,11 @@ func (sr *SwarmRegistry) initMeshDB() error {
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS organisms(
 		id TEXT PRIMARY KEY, pid INTEGER, stage INTEGER,
 		n_params INTEGER, syntropy REAL, entropy REAL,
-		last_heartbeat REAL, parent_id TEXT,
+		last_heartbeat REAL,
 		status TEXT DEFAULT 'alive',
 		element TEXT)`)
 	// Migration for existing databases
 	db.Exec("ALTER TABLE organisms ADD COLUMN element TEXT")
-	if err != nil {
-		db.Close()
-		return err
-	}
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS messages(
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		from_id TEXT, to_id TEXT, type TEXT, payload TEXT, ts REAL)`)
 	if err != nil {
 		db.Close()
 		return err
@@ -5503,49 +5416,8 @@ func (sr *SwarmRegistry) initMeshDB() error {
 		db.Close()
 		return err
 	}
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS mitosis_lock(
-		organism_id TEXT PRIMARY KEY, acquired_at REAL)`)
-	if err != nil {
-		db.Close()
-		return err
-	}
 	sr.MeshDB = db
 	return nil
-}
-
-// AcquireMitosisSlot atomically admits a divide ONLY if (a) no other organism is
-// mid-divide (mitosis_lock free) AND (b) the live colony is below maxOrganisms —
-// one SQL statement, TOCTOU-safe across the multi-process lineage (audit C3: the
-// old len(DiscoverPeers)+1 check-then-act let concurrent dividers overshoot the
-// cap). The lock self-expires after 30s, which spans the child's registration
-// window so the next admit counts the new child. maxOrganisms<=0 disables the cap.
-func (sr *SwarmRegistry) AcquireMitosisSlot(maxOrganisms int) bool {
-	if sr.MeshDB == nil || maxOrganisms <= 0 {
-		return true
-	}
-	now := float64(time.Now().UnixMilli()) / 1000.0
-	lockCutoff := now - 30.0 // mitosis lock expiry
-	liveCutoff := now - 60.0 // heartbeat freshness (matches DiscoverPeers window)
-	result, err := sr.MeshDB.Exec(
-		`INSERT OR REPLACE INTO mitosis_lock(organism_id, acquired_at)
-		 SELECT ?, ? WHERE
-		   NOT EXISTS (SELECT 1 FROM mitosis_lock WHERE organism_id != ? AND acquired_at > ?)
-		   AND (SELECT COUNT(*) FROM organisms WHERE status='alive' AND last_heartbeat > ?) < ?`,
-		sr.OrganismID, now, sr.OrganismID, lockCutoff, liveCutoff, maxOrganisms)
-	if err != nil {
-		return false
-	}
-	rows, _ := result.RowsAffected()
-	return rows > 0
-}
-
-// ReleaseMitosisLock frees the slot early (on a failed spawn). On success the lock
-// is left to expire so the new child registers before the next divide is admitted.
-func (sr *SwarmRegistry) ReleaseMitosisLock() {
-	if sr.MeshDB == nil {
-		return
-	}
-	sr.MeshDB.Exec(`DELETE FROM mitosis_lock WHERE organism_id = ?`, sr.OrganismID)
 }
 
 func (sr *SwarmRegistry) registerInMesh() error {
@@ -5600,28 +5472,9 @@ func (sr *SwarmRegistry) DiscoverPeers(timeoutSeconds float64) []map[string]inte
 	return peers
 }
 
-// MarkHibernating marks this organism as sleeping in mesh.db.
-func (sr *SwarmRegistry) MarkHibernating() {
-	if sr.MeshDB != nil {
-		sr.MeshDB.Exec("UPDATE organisms SET status='sleeping' WHERE id=?", sr.OrganismID)
-	}
-}
-
-// LogMessage logs a message between organisms.
-func (sr *SwarmRegistry) LogMessage(toID, msgType string, payload interface{}) {
-	if sr.MeshDB != nil {
-		payloadJSON, _ := json.Marshal(payload)
-		sr.MeshDB.Exec(
-			"INSERT INTO messages(from_id,to_id,type,payload,ts) VALUES(?,?,?,?,?)",
-			sr.OrganismID, toID, msgType, string(payloadJSON),
-			float64(time.Now().UnixMilli())/1000.0)
-	}
-}
-
 // Unregister cleans up on exit.
 func (sr *SwarmRegistry) Unregister() {
 	if sr.MeshDB != nil {
-		sr.MeshDB.Exec("UPDATE organisms SET status='dead' WHERE id=?", sr.OrganismID)
 		sr.MeshDB.Close()
 		sr.MeshDB = nil
 	}
@@ -5660,102 +5513,6 @@ func (sr *SwarmRegistry) ReleaseTrainingLock() {
 		return
 	}
 	sr.MeshDB.Exec("DELETE FROM training_lock WHERE organism_id=?", sr.OrganismID)
-}
-
-// performMitosis divides the organism. Parent continues. The child inherits the
-// parent's growth stage via the checkpoint dimensions (not infant).
-func performMitosis(model *GPT, tok *EvolvingTokenizer, db *sql.DB, swarm *SwarmRegistry, syntracker *SyntropyTracker) (string, error) {
-	childID := fmt.Sprintf("org_%d_%d", time.Now().Unix(), rand.Intn(9000)+1000)
-	childDir := filepath.Join(os.Getenv("HOME"), ".kairos", childID)
-	if err := os.MkdirAll(childDir, 0755); err != nil {
-		return "", err
-	}
-
-	// (audit C4 + c) Relieve the parent's overload and stamp the cooldown BEFORE
-	// capturing the inherited history below — so the child does NOT inherit a
-	// pre-overloaded burst/entropy state (which made it divide again the instant
-	// its own 300s cooldown cleared). Division relieves the overwhelm at the root.
-	syntracker.LastMitosisTime = float64(time.Now().UnixMilli()) / 1000.0
-	syntracker.relieveOverload()
-
-	// Save parent checkpoint for child's reference
-	parentCkpt := filepath.Join(childDir, "parent_ckpt.json")
-	if err := SaveCheckpoint(model, tok, parentCkpt); err != nil {
-		return "", err
-	}
-
-	// Write birth config with inherited memory
-	birth := map[string]interface{}{
-		"organism_id":   childID,
-		"parent_id":     swarm.OrganismID,
-		"corpus_path":   CFG.CorpusPath,
-		"db_path":       filepath.Join(childDir, "memory.sqlite3"),
-		"ckpt_path":     parentCkpt, // load the parent checkpoint actually written at spawn time (see performMitosis above)
-		"burst_history": syntracker.BurstHistory,
-	}
-	birthPath := filepath.Join(childDir, "birth.json")
-	birthJSON, _ := json.Marshal(birth)
-	if err := os.WriteFile(birthPath, birthJSON, 0644); err != nil {
-		return "", err
-	}
-
-	// Log in mesh
-	swarm.LogMessage(childID, "mitosis:spawn",
-		map[string]interface{}{"parent_stage": model.CurrentGrowthStage()})
-	dbLogGrowth(db, model, tok, loadCorpusLines(CFG.CorpusPath), 0.0,
-		fmt.Sprintf("mitosis:spawn:%s", childID))
-
-	// Spawn child process
-	exePath, err := os.Executable()
-	if err != nil {
-		exePath = os.Args[0]
-	}
-	// (audit BUG A) The child must run AUTONOMOUS — inherit the parent's run mode
-	// (--evolution always; --gpu/--cross-graze/--element to match). Without these
-	// it booted into the interactive REPL ("Type and press Enter") and stalled.
-	childArgs := []string{"--organism-id", childID, "--config", birthPath, "--evolution"}
-	if CFG.UseGPU {
-		childArgs = append(childArgs, "--gpu")
-	}
-	if CFG.CrossGraze {
-		childArgs = append(childArgs, "--cross-graze")
-	}
-	base := filepath.Base(CFG.CorpusPath)
-	if strings.HasPrefix(base, "nonames_") && strings.HasSuffix(base, ".txt") {
-		childArgs = append(childArgs, "--element", strings.TrimSuffix(strings.TrimPrefix(base, "nonames_"), ".txt"))
-	}
-	cmd := exec.Command(exePath, childArgs...)
-	// (audit BUG B) Child writes its OWN log, not the parent's stdout — inheriting
-	// os.Stdout mixed the whole lineage into one file and made monitoring impossible.
-	childLog, _ := os.Create(filepath.Join(childDir, "train.log"))
-	if childLog != nil {
-		cmd.Stdout = childLog
-		cmd.Stderr = childLog
-	} else {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-	}
-	if err := cmd.Start(); err != nil {
-		if childLog != nil {
-			childLog.Close()
-		}
-		return "", err
-	}
-	// Reap the child on its eventual exit (no zombie of this long-lived parent)
-	// and close its log handle.
-	go func() { _ = cmd.Wait(); if childLog != nil { childLog.Close() } }()
-
-	fmt.Printf("[ecology] Child %s spawned (pid=%d) — log %s/train.log\n", childID, cmd.Process.Pid, childDir)
-	return childID, nil
-}
-
-// performHibernation saves state, marks sleeping, and signals exit.
-func performHibernation(model *GPT, tok *EvolvingTokenizer, db *sql.DB, swarm *SwarmRegistry) {
-	fmt.Printf("[ecology] HIBERNATION — organism %s going to sleep\n", swarm.OrganismID)
-	SaveCheckpoint(model, tok, "")
-	swarm.MarkHibernating()
-	dbLogGrowth(db, model, tok, loadCorpusLines(CFG.CorpusPath), 0.0,
-		fmt.Sprintf("hibernate:%s", swarm.OrganismID))
 }
 
 // ============================================================
@@ -5802,11 +5559,14 @@ func dnaWrite(element string, model *GPT, tok *EvolvingTokenizer, field *Cooccur
 		return
 	}
 
-	dir := filepath.Join("../dna/output", element)
-	os.MkdirAll(dir, 0755)
-	fname := filepath.Join(dir, fmt.Sprintf("gen_%d_%d.txt", time.Now().Unix(), step))
-	os.WriteFile(fname, []byte(frag+"\n"), 0644)
-	fmt.Printf("[dna] %s wrote %d bytes to ecology\n", element, len(frag))
+	// All organisms emit into the one shared pool kairos.txt (append). This is
+	// the container the main Kairos is born from; each mini still trains on its
+	// own element file (corpus_path), but its voice flows here.
+	if f, err := os.OpenFile("kairos.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+		f.WriteString(frag + "\n")
+		f.Close()
+	}
+	fmt.Printf("[dna] %s wrote %d bytes to the shared pool (kairos.txt)\n", element, len(frag))
 }
 
 // dnaRead consumes text from other organisms' output directories, returns bytes added.
@@ -6540,29 +6300,6 @@ func backgroundTrainer(db *sql.DB, model *GPT, tok *EvolvingTokenizer, qbuf *Qua
 				model.mu.Unlock()
 			}
 
-			// Ecology: mitosis / hibernation
-			if swarm != nil && action == "divide" {
-				// (audit C3) atomic admit: serialized + count-capped across processes
-				if !swarm.AcquireMitosisSlot(CFG.MaxOrganisms) {
-					fmt.Printf("[ecology] MITOSIS refused — colony at cap (%d) or a sibling is dividing\n", CFG.MaxOrganisms)
-				} else {
-					fmt.Println("[ecology] MITOSIS triggered — organism overloaded, spawning child")
-					model.mu.Lock()
-					_, mErr := performMitosis(model, tok, db, swarm, syntracker)
-					model.mu.Unlock()
-					if mErr != nil {
-						swarm.ReleaseMitosisLock() // spawn failed — free the slot now (success holds it to expiry)
-					}
-				}
-			}
-
-			if swarm != nil && action == "hibernate" {
-				model.mu.Lock()
-				performHibernation(model, tok, db, swarm)
-				model.mu.Unlock()
-				fmt.Println("[ecology] Organism hibernating. Goodbye.")
-				return // exit training loop
-			}
 		}
 
 		// DNA exchange: every tick = every breath. Organism exhales DNA, inhales others'.
