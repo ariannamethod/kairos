@@ -5,8 +5,6 @@
  * No npm. No webpack. No React. No node_modules black hole.
  * Just a <script> tag and the blind faith of a mass-less neuron.
  *
- * Same architecture as Go/C/Rust. Zero dependencies. Browser-native.
- *
  * - Trains on nonames.txt (fetched or pasted)
  * - Keeps IndexedDB memory (because localStorage has a 5MB soul)
  * - Maintains a bounded corpus reservoir (never bloats)
