@@ -1,5 +1,12 @@
 ## LOG
 
+### 2026-07-01 — vendor: fresh notorch + AML engine in `ariannamethod/`
+
+- Created the `ariannamethod/` vendor at the repo root with the updated engine from upstream `notorch` (`b1959f4`) + `ariannamethod.ai` AML core (`9d80ac3`), replacing molequla's May-14 snapshot.
+- notorch `4739 → 5354` lines: packed-GGUF `nt_qmatvec` (×7), op33 RRPRAM-lowrank, Chuck optimizer, Metal backend (`notorch_metal.{h,mm}`), GGUF loader (`gguf.{c,h}`), vision (`notorch_vision.h` + `stb_image.h`). AML core `8000 → 8423` lines (`ariannamethod.{c,h}` + CUDA). `notorch_simd.h` fresh (`632 → 661`); `notorch_simd_scalar.h` unchanged.
+- Makefile rebranded to Kairos: builds `libkairos.{so,dylib}` from `ariannamethod.c + notorch.c` (kept the proven combined-lib build pattern + SIMD path; dropped the dangling `test_aml.c` target that was not vendored). Excluded the Python tier (`method.py`/`sentinel.py`/`__init__.py` — per Oleg) and build artifacts (`.o`/`.dylib`, now gitignored).
+- Verified: `make` builds `libkairos.dylib` (317392 B) from the fresh sources (deprecation warnings only, no errors). Added repo `.gitignore` (artifacts + internal logs).
+
 ### 2026-07-01 — resnya: cut mortality (immortal organism) + DNA emission → shared kairos.txt
 
 - Cut from all 4 ports (`roots/kairos.{c,go,rs,js}`): mitosis/division/child-spawn (`perform_mitosis`, `birth.json`, mitosis-lock, `MaxOrganisms` cap, `AcquireMitosisSlot`/`ReleaseMitosisLock`), hibernation/sleep (`perform_hibernation`, `should_hibernate`, `MarkHibernating`, `"sleeping"` status), apoptosis/death (`status='dead'` self-marker + peer `"dead"` handler), the overload-triggers that only fed divide/hibernate (`is_sustained_overload`, `relieve_overload`, syntropy CASE 6/7), mesh `messages(from_id,to_id,payload)` table + `swarm_log_message`/`LogMessage`, and the `parent_id` lineage column. Diff: 19 insertions / 606 deletions.

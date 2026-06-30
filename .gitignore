@@ -1,0 +1,13 @@
+# build artifacts
+*.o
+*.so
+*.dylib
+
+# internal logs (KAIROSLOG.md is the tracked one)
+LOCAL_STATE.md
+PROJECT_LOG.md
+
+# runtime / ecology state
+.kairos/
+*.ckpt
+*.sqlite3
