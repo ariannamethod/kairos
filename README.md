@@ -1,2 +1,2 @@
-# kairos
-KAIROS: Kernel Autonomous Intelligent Recursive Ontogenic Sonar
+# KAIROS: Kernel Autonomous Intelligent Recursive Ontogenic Sonar. Janus Architecture.
+by **Arianna Method**
