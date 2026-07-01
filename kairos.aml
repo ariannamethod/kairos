@@ -23,8 +23,36 @@ BLOOD COMPILE kairos_headers {
 }
 
 BLOOD COMPILE kairos_model {
-/* Model + K01 loader + resonance forward (forward-only). Layout MUST match
- * kairos_train.c save_ckpt exactly. */
+/* Model + K02 loader + resonance forward (forward-only). Layout MUST match
+ * kairos_train.c save_ckpt exactly (incl. the fixed-BPE merge table). */
+
+/* Fixed BPE — encode/decode only; merges are loaded from the checkpoint. */
+typedef struct { int a, b, result; } MergeRule;
+static struct { MergeRule merges[4096]; int n_merges, vocab_size; } BPE = { .n_merges = 0, .vocab_size = 256 };
+static int bpe_encode(const unsigned char *text, int len, int *out, int max) {
+    int n = 0;
+    for (int i = 0; i < len && n < max; i++) out[n++] = text[i];
+    for (int m = 0; m < BPE.n_merges; m++) {
+        MergeRule *mr = &BPE.merges[m]; int j = 0;
+        for (int i = 0; i < n; i++) {
+            if (i + 1 < n && out[i] == mr->a && out[i + 1] == mr->b) { out[j++] = mr->result; i++; }
+            else out[j++] = out[i];
+        }
+        n = j;
+    }
+    return n;
+}
+static int bpe_decode_token(int tok, char *buf, int max) {
+    if (tok < 256) { if (max > 0) buf[0] = (char)tok; return 1; }
+    for (int m = BPE.n_merges - 1; m >= 0; m--)
+        if (BPE.merges[m].result == tok) {
+            int n1 = bpe_decode_token(BPE.merges[m].a, buf, max);
+            return n1 + bpe_decode_token(BPE.merges[m].b, buf + n1, max - n1);
+        }
+    if (max > 0) buf[0] = '?';
+    return 1;
+}
+
 typedef struct {
     int V, D, H, L, T, R, hd;
     nt_tensor *wte, *lm_head, *gammaf;
@@ -42,12 +70,17 @@ static int kairos_load(Kairos *k, const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) { fprintf(stderr, "[kairos] cannot open %s\n", path); return 1; }
     char magic[4]; int cfg[6];
-    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "K01\n", 4) != 0) {
+    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "K02\n", 4) != 0) {
         fprintf(stderr, "[kairos] bad magic\n"); fclose(f); return 1;
     }
     if (fread(cfg, sizeof(int), 6, f) != 6) { fclose(f); return 1; }
     k->V = cfg[0]; k->D = cfg[1]; k->H = cfg[2]; k->L = cfg[3];
     k->T = cfg[4]; k->R = cfg[5]; k->hd = k->D / k->H;
+    /* Fixed-BPE merge table (right after cfg, before the tensors). */
+    int nmerge = 0;
+    if (fread(&nmerge, sizeof(int), 1, f) != 1 || nmerge < 0 || nmerge > 4096) { fclose(f); return 1; }
+    BPE.n_merges = nmerge; BPE.vocab_size = 256 + nmerge;
+    if (nmerge > 0 && fread(BPE.merges, sizeof(MergeRule), nmerge, f) != (size_t)nmerge) { fclose(f); return 1; }
     int D = k->D, V = k->V, H = k->H, R = k->R, T = k->T, L = k->L;
     k->wte = k_read(f, V, D); k->lm_head = k_read(f, V, D); k->gammaf = k_read(f, D, 1);
 #define KALLOC(nm) k->nm = malloc(sizeof(nt_tensor*) * L)
@@ -146,12 +179,16 @@ static void kairos_generate(Kairos *k, const char *prompt, int n, float temp) {
      * factor stride is misread. A fixed left-padded sliding window keeps T = W. */
     int W = k->T;
     int *win = malloc(sizeof(int) * W);
+    /* Encode the prompt (bytes → BPE tokens), keep the last W in a left-padded window. */
     int plen = (int)strlen(prompt);
-    if (plen > W) { prompt += (plen - W); plen = W; }   /* keep the last W */
-    if (plen < 1) { prompt = "\n"; plen = 1; }          /* empty-prompt guard */
-    for (int i = 0; i < W; i++)
-        win[i] = (i < W - plen) ? '\n' : (unsigned char)prompt[i - (W - plen)];
+    int *ptok = malloc(sizeof(int) * (plen + 1));
+    int np = bpe_encode((const unsigned char *)prompt, plen, ptok, plen + 1);
+    if (np < 1) { ptok[0] = '\n'; np = 1; }               /* empty-prompt guard */
+    if (np > W) { memmove(ptok, ptok + (np - W), sizeof(int) * W); np = W; }
+    for (int i = 0; i < W; i++) win[i] = (i < W - np) ? '\n' : ptok[i - (W - np)];
+    free(ptok);
     float *logits = malloc(sizeof(float) * k->V);
+    char dbuf[512];
     fputs(prompt, stdout);
     for (int i = 0; i < n; i++) {
         nt_tape_start();
@@ -163,7 +200,9 @@ static void kairos_generate(Kairos *k, const char *prompt, int n, float temp) {
         am_apply_destiny_to_logits(logits, k->V);
         am_apply_attention_to_logits(logits, k->V);
         int tok = k_sample(logits, k->V, temp);
-        putchar(tok); fflush(stdout);
+        int nb = bpe_decode_token(tok, dbuf, (int)sizeof(dbuf));  /* BPE token → bytes */
+        if (nb > (int)sizeof(dbuf)) nb = (int)sizeof(dbuf);       /* decode is bounded by max; clamp the count too */
+        fwrite(dbuf, 1, nb, stdout); fflush(stdout);
         memmove(win, win + 1, sizeof(int) * (W - 1));  /* slide window left */
         win[W - 1] = tok;
     }

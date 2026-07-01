@@ -1,5 +1,26 @@
 ## LOG
 
+### 2026-07-01 — BPE in the born-Kairos heart (K02) + internal plan gitignored
+
+- The born-Kairos trainer and inference move off byte-level onto a fixed learn-once
+  BPE (wall #2): `ariannamethod/kairos_train.c` learns `K_MERGES` merges once,
+  encodes the corpus, and writes the `K02` checkpoint (magic `K02\n` + cfg[6] +
+  `n_merges` + `MergeRule[]` + tensors) — `kairos_train.c:50,264`; `kairos.aml`
+  reads the same `K02` + its merge table — `kairos.aml:73`. Vocab = 256 + `K_MERGES`
+  (1024 → 1280). BPE-OOM malloc guard + hash headroom `1<<22` at `kairos_train.c:85-92`.
+- `.gitignore` now also ignores the internal `KAIROS_PLAN.md` (alongside
+  `LOCAL_STATE.md` / `PROJECT_LOG.md`) — a planning doc, not for commit.
+- Verified this turn (tool): C + trainer `gcc -fsyntax-only` rc0; Go `gofmt -e` rc0;
+  JS `node --check` rc0; `amlc kairos.aml` → success; K02 magic consistent
+  trainer↔inference; DNA writes to `kairos.txt` = 0 in both ports (grep).
+
+### 2026-07-01 — DNA emission reverted to per-element ecology; kairos.txt is the seed only
+
+- Corrected a resnya mistake (`b661697`): the DNA emission had been repointed to append into the shared `kairos.txt`. That polluted the seed. `kairos.txt` is the **main-Kairos primordial dataset** (its container) and must never be a DNA sink; the four mini-Kairoses each have their own per-element file.
+- Reverted the emission in both writing ports back to the molequla ecology (exact pre-`b661697` form): C `dna_write` (`roots/kairos.c:4809`) and Go `dnaWrite` (`roots/kairos.go:5553`) now write each organism's generated fragment to `../dna/output/<element>/gen_<ts>_<step>.txt` again. This also re-matches the consumption side — `dna_read` (`roots/kairos.c:4822`) / `dnaRead` read siblings' `../dna/output`, so emission and consumption point at the same place once more (closes the write/read split on the write side).
+- `kairos.txt` stays the default corpus / seed (`roots/kairos.c:165`, `roots/kairos.go:238`); each mini still reads its own element file via `--element` → `nonames_<element>.txt`. Rust/JS ports never emitted DNA (only read the seed corpus), so they were untouched.
+- Verified: `grep fopen("kairos.txt"` in kairos.c = 0, `grep OpenFile("kairos.txt"` in kairos.go = 0; emission now to `../dna/output` in both; C `gcc -fsyntax-only -DUSE_BLAS` rc=0; Go `gofmt -e` parse OK.
+
 ### 2026-07-01 — construction-audit fixes, wave 1: coherence wall on, colony leftovers cut
 
 - A Codex construction (design) audit found the project is an architectural fork — two organisms (the Go/ports molequla stack with BPE/overlay/growth/DNA, and the new C/AML resonance heart with byte-level/no-overlay) that share no weights/tokenizer/lifecycle — plus P0–P2 problems. This is wave 1: the clear, fork-independent fixes.

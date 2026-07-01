@@ -4,11 +4,11 @@
  * + RRPRAM low-rank (op 33) blended by a per-head sigmoid gate → SwiGLU.
  *
  * This is the TRAINER. kairos.aml is the INFERENCE. Both share the arch and the
- * .bin weight format (K01 magic) below.
+ * K02 weight format (K02 magic + fixed-BPE merge table + tensors) below.
  *
- * v1 tokenizer = byte-level (vocab 256) so the trainer is self-contained; a real
- * BPE is a grab-from-molequla item (EvolvingTokenizer). Overfit the 4 mini-Kairos
- * (>=10k iters), keep Kairos to a healthy val — the stop criterion, not iters.
+ * Tokenizer = fixed BPE (learn-once, K_MERGES merges → vocab 256+K_MERGES; wall #2,
+ * no vocab shift across stages). Overfit the 4 mini-Kairos (>=10k iters), keep the
+ * born Kairos to a healthy val — the stop criterion, not iters.
  *
  * Build (from ariannamethod/):
  *   make            # builds libkairos.dylib from ariannamethod.c + notorch.c
@@ -42,9 +42,81 @@
 #ifndef K_RANK
 #define K_RANK    48    /* RRPRAM low-rank R (keep low — full Wr is param-hungry) */
 #endif
-#define K_VOCAB   256   /* byte-level v1 */
+#ifndef K_MERGES
+#define K_MERGES  1024  /* fixed BPE merges → vocab = 256 + K_MERGES (wall #2) */
+#endif
+#define K_MAX_MERGES 4096
 #define K_HEADDIM (K_DIM / K_HEADS)
-#define K_MAGIC   "K01\n"
+#define K_MAGIC   "K02\n"
+static int g_vocab = 256;   /* runtime = 256 + BPE.n_merges */
+
+/* ── Fixed BPE (learn-once; arch from RRPRAM/resonance-bpe.c, fast O(n)/merge
+ *    pair-count via a hash instead of the O(n^2) reference scan). ── */
+typedef struct { int a, b, result; } MergeRule;
+static struct { MergeRule merges[K_MAX_MERGES]; int n_merges, vocab_size; } BPE = { .n_merges = 0, .vocab_size = 256 };
+
+static int bpe_encode(const unsigned char *text, int len, int *out, int max) {
+    int n = 0;
+    for (int i = 0; i < len && n < max; i++) out[n++] = text[i];
+    for (int m = 0; m < BPE.n_merges; m++) {
+        MergeRule *mr = &BPE.merges[m]; int j = 0;
+        for (int i = 0; i < n; i++) {
+            if (i + 1 < n && out[i] == mr->a && out[i + 1] == mr->b) { out[j++] = mr->result; i++; }
+            else out[j++] = out[i];
+        }
+        n = j;
+    }
+    return n;
+}
+
+static int bpe_decode_token(int tok, char *buf, int max) {
+    if (tok < 256) { if (max > 0) buf[0] = (char)tok; return 1; }
+    for (int m = BPE.n_merges - 1; m >= 0; m--)
+        if (BPE.merges[m].result == tok) {
+            int n1 = bpe_decode_token(BPE.merges[m].a, buf, max);
+            return n1 + bpe_decode_token(BPE.merges[m].b, buf + n1, max - n1);
+        }
+    if (max > 0) buf[0] = '?';
+    return 1;
+}
+
+static void bpe_learn_merges(const unsigned char *data, int len, int nm) {
+    int n = len;
+    long HS = 1L << 22;  /* headroom >> distinct adjacent pairs (< vocab^2) */
+    int  *tok  = malloc((size_t)len * sizeof(int));
+    long *hkey = malloc((size_t)HS * sizeof(long));
+    int  *hcnt = malloc((size_t)HS * sizeof(int));
+    if (!tok || !hkey || !hcnt) {
+        fprintf(stderr, "[kairos_train] BPE OOM\n");
+        free(tok); free(hkey); free(hcnt); return;
+    }
+    for (int i = 0; i < n; i++) tok[i] = data[i];
+    int max_m = nm < K_MAX_MERGES ? nm : K_MAX_MERGES;
+    for (int m = 0; m < max_m; m++) {
+        memset(hkey, 0xff, (size_t)HS * sizeof(long));  /* -1 = empty */
+        memset(hcnt, 0, (size_t)HS * sizeof(int));
+        long bestKey = -1; int bestCnt = 0;
+        for (int i = 0; i + 1 < n; i++) {
+            long key = (long)tok[i] * 100000L + tok[i + 1];
+            long h = ((key * 2654435761UL) >> 11) & (HS - 1);
+            while (hkey[h] != -1 && hkey[h] != key) h = (h + 1) & (HS - 1);
+            hkey[h] = key; hcnt[h]++;
+            if (hcnt[h] > bestCnt) { bestCnt = hcnt[h]; bestKey = key; }
+        }
+        if (bestCnt < 2) break;
+        int ba = (int)(bestKey / 100000L), bb = (int)(bestKey % 100000L), nid = 256 + m;
+        BPE.merges[m] = (MergeRule){ ba, bb, nid };
+        BPE.n_merges = m + 1; BPE.vocab_size = 256 + m + 1;
+        int j = 0;
+        for (int i = 0; i < n; i++) {
+            if (i + 1 < n && tok[i] == ba && tok[i + 1] == bb) { tok[j++] = nid; i++; }
+            else tok[j++] = tok[i];
+        }
+        n = j;
+        if ((m + 1) % 256 == 0) fprintf(stderr, "  bpe merge %d/%d vocab=%d tokens=%d\n", m + 1, max_m, nid + 1, n);
+    }
+    free(hkey); free(hcnt); free(tok);
+}
 
 static float randn(float std) {
     /* Box–Muller; RAND_MAX-safe */
@@ -94,8 +166,8 @@ static void model_init(Model *m) {
     float s = 0.02f;
     int D = K_DIM, H = K_HEADS, R = K_RANK, T = K_SEQ, hd = K_HEADDIM;
     (void)hd;
-    m->wte     = mk(K_VOCAB, D, s);
-    m->lm_head = mk(K_VOCAB, D, s);
+    m->wte     = mk(g_vocab, D, s);
+    m->lm_head = mk(g_vocab, D, s);
     m->gammaf  = mk_ones(D);
     for (int l = 0; l < K_LAYERS; l++) {
         m->gamma1[l] = mk_ones(D);
@@ -174,7 +246,7 @@ static int forward(Model *m, Idx *ix, int tokIdx, int tgtIdx, int T) {
     }
     int hf = nt_seq_rmsnorm(h, ix->gammaf, T, D);
     int logits = nt_seq_linear(ix->lm_head, hf, T);
-    return nt_seq_cross_entropy(logits, tgtIdx, T, K_VOCAB);
+    return nt_seq_cross_entropy(logits, tgtIdx, T, g_vocab);
 }
 
 /* Cosine LR with warmup. */
@@ -188,9 +260,11 @@ static float lr_at(int step, int steps, float base) {
 static void save_ckpt(Model *m, const char *path) {
     FILE *f = fopen(path, "wb");
     if (!f) { fprintf(stderr, "[kairos_train] cannot write %s\n", path); return; }
-    int cfg[6] = { K_VOCAB, K_DIM, K_HEADS, K_LAYERS, K_SEQ, K_RANK };
+    int cfg[6] = { g_vocab, K_DIM, K_HEADS, K_LAYERS, K_SEQ, K_RANK };
     fwrite(K_MAGIC, 1, 4, f);
     fwrite(cfg, sizeof(int), 6, f);
+    fwrite(&BPE.n_merges, sizeof(int), 1, f);
+    fwrite(BPE.merges, sizeof(MergeRule), BPE.n_merges, f);
     nt_tensor *all[] = { m->wte, m->lm_head, m->gammaf };
     for (int i = 0; i < 3; i++) fwrite(all[i]->data, sizeof(float), all[i]->len, f);
     for (int l = 0; l < K_LAYERS; l++) {
@@ -216,8 +290,17 @@ int main(int argc, char **argv) {
     unsigned char *buf = malloc(n);
     if (fread(buf, 1, n, cf) != (size_t)n) { fclose(cf); free(buf); return 1; }
     fclose(cf);
-    fprintf(stderr, "[kairos_train] corpus %ld bytes | %d params-arch D=%d H=%d L=%d T=%d R=%d\n",
-            n, 0, K_DIM, K_HEADS, K_LAYERS, K_SEQ, K_RANK);
+
+    /* Fixed BPE: learn merges once, encode the whole corpus into tokens (wall #2). */
+    fprintf(stderr, "[kairos_train] learning BPE (%d merges) on %ld bytes...\n", K_MERGES, n);
+    bpe_learn_merges(buf, (int)n, K_MERGES);
+    g_vocab = BPE.vocab_size;
+    int *toks = malloc((size_t)n * sizeof(int));
+    long ntok = bpe_encode(buf, (int)n, toks, (int)n);
+    free(buf);
+    if (ntok < K_SEQ + 2) { fprintf(stderr, "[kairos_train] too few tokens (%ld)\n", ntok); free(toks); return 1; }
+    fprintf(stderr, "[kairos_train] BPE vocab=%d | %ld bytes -> %ld tokens | D=%d H=%d L=%d T=%d R=%d\n",
+            g_vocab, n, ntok, K_DIM, K_HEADS, K_LAYERS, K_SEQ, K_RANK);
 
     srand((unsigned)time(NULL));
     Model m; model_init(&m);
@@ -226,8 +309,8 @@ int main(int argc, char **argv) {
     float tok[K_SEQ], tgt[K_SEQ];
 
     for (int step = 0; step < steps; step++) {
-        long start = (long)((double)rand() / ((double)RAND_MAX + 1.0) * (double)(n - T - 1));
-        for (int t = 0; t < T; t++) { tok[t] = (float)buf[start + t]; tgt[t] = (float)buf[start + t + 1]; }
+        long start = (long)((double)rand() / ((double)RAND_MAX + 1.0) * (double)(ntok - T - 1));
+        for (int t = 0; t < T; t++) { tok[t] = (float)toks[start + t]; tgt[t] = (float)toks[start + t + 1]; }
 
         nt_tape_start();
         Idx ix; register_params(&m, &ix);
@@ -251,6 +334,6 @@ int main(int argc, char **argv) {
     }
 
     save_ckpt(&m, out);
-    free(buf);
+    free(toks);
     return 0;
 }

@@ -4806,10 +4806,16 @@ static void dna_write(const char *element, GPT *g, int step) {
     char *answer = gpt_generate(g, probe);
     if (!answer || strlen(answer) < 20) { free(answer); return; }
 
-    /* All organisms emit into the one shared pool kairos.txt (append). */
-    FILE *f = fopen("kairos.txt", "a");
+    /* Each organism emits its DNA into its own per-element ecology dir
+       (../dna/output/<element>/); siblings consume it via dna_read. kairos.txt
+       stays the main-Kairos seed, never a DNA sink. */
+    char dir[512], fname[512];
+    snprintf(dir, sizeof(dir), "../dna/output/%s", element);
+    mkdir(dir, 0755); /* ignore if exists */
+    snprintf(fname, sizeof(fname), "%s/gen_%ld_%d.txt", dir, (long)time(NULL), step);
+    FILE *f = fopen(fname, "w");
     if (f) { fprintf(f, "%s\n", answer); fclose(f); }
-    printf("[dna] %s wrote %d bytes to the shared pool (kairos.txt)\n", element, (int)strlen(answer));
+    printf("[dna] %s wrote %d bytes to ecology\n", element, (int)strlen(answer));
     free(answer);
 }
 

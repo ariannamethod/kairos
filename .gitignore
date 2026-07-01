@@ -8,6 +8,7 @@ ariannamethod/kairos_train
 # internal logs (KAIROSLOG.md is the tracked one)
 LOCAL_STATE.md
 PROJECT_LOG.md
+KAIROS_PLAN.md
 
 # runtime / ecology state
 .kairos/

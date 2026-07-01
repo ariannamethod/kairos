@@ -5550,14 +5550,14 @@ func dnaWrite(element string, model *GPT, tok *EvolvingTokenizer, field *Cooccur
 		return
 	}
 
-	// All organisms emit into the one shared pool kairos.txt (append). This is
-	// the container the main Kairos is born from; each mini still trains on its
-	// own element file (corpus_path), but its voice flows here.
-	if f, err := os.OpenFile("kairos.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
-		f.WriteString(frag + "\n")
-		f.Close()
-	}
-	fmt.Printf("[dna] %s wrote %d bytes to the shared pool (kairos.txt)\n", element, len(frag))
+	// Each organism emits its DNA into its own per-element ecology dir
+	// (../dna/output/<element>/); siblings consume it via dnaRead. kairos.txt
+	// stays the main-Kairos seed, never a DNA sink.
+	dir := filepath.Join("../dna/output", element)
+	os.MkdirAll(dir, 0755)
+	fname := filepath.Join(dir, fmt.Sprintf("gen_%d_%d.txt", time.Now().Unix(), step))
+	os.WriteFile(fname, []byte(frag+"\n"), 0644)
+	fmt.Printf("[dna] %s wrote %d bytes to ecology\n", element, len(frag))
 }
 
 // dnaRead consumes text from other organisms' output directories, returns bytes added.
