@@ -13,3 +13,6 @@ PROJECT_LOG.md
 .kairos/
 *.ckpt
 *.sqlite3
+
+# rust build cache
+target/
