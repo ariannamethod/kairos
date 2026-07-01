@@ -1,5 +1,12 @@
 ## LOG
 
+### 2026-07-01 — resonance heart: C notorch trainer + `kairos.aml` inference
+
+- `ariannamethod/kairos_train.c` — from-scratch trainer for the Kairos resonance/Janus arch on the notorch tape + Chuck: `seq_embedding → per layer {parametric RMSNorm → Q/K/V + RoPE → content MHA + RRPRAM-lowrank (op33) blended by a per-head sigmoid gate → WO residual → RMSNorm → SwiGLU} → final RMSNorm → lm_head → cross_entropy`. Writes a `K01` checkpoint. v1 tokenizer = byte-level (vocab 256), dims via `-D` defines. Verified: compiles against `libkairos`; trains (loss `5.5651 → 3.8913` in 20 steps — start ≈ ln(256), real gradient).
+- `kairos.aml` (root) — INFERENCE: loads `K01`, runs the SAME forward FORWARD-ONLY (all params `nt_tape_param_frozen`, arch byte-identical to the trainer), samples with the AML Dario field overlay (`am_apply_destiny/attention_to_logits`). Two faces of attention = Janus (content + RRPRAM). Verified: `amlc` compiles + runs a generation on the trainer checkpoint.
+- Codex audit: `K01` save↔load order PASS, forward shapes PASS, Chuck slot-order PASS. Fixed its FAILs: (1) inference RRPRAM ran at the current context length while `wr` is packed for `k->T` (op33 derives rank from `wr->len/(H*(D+T))`) → now a fixed left-padded `k->T` window, so short prompts are structurally correct; (2) empty prompt → seed `\n` guard; (3) `alpha` relabeled — the gate is FIXED this version (frozen, 50/50 content/rrpram, like the Go frozen-gate pattern that keeps sigmoid off the tape); a learnable on-tape gate is a follow-up. Exit-only tensor leaks noted as a follow-up (harmless).
+- NEXT grabs from molequla (analysis): BPE C tokenizer (RRPRAM `resonance-bpe.c`) to replace byte-level; the Q metaweights overlay (`q/postgpt_q.c`) as the PRIMARY coherence-from-zero (the AML Dario field is the secondary layer); growth-stages (`molequla.go` `GrowthStages`) for embryo→10M ontogenesis; SPA reseed; field `.soma` persistence; GGUF export for the level-2 DoE parliament.
+
 ### 2026-07-01 — Go split: organism/trainer in `roots/`, generic glue in `go-tools/`
 
 - The Go organism (`roots/kairos.go`) needs ~15 companion `.go` files from molequla; only `kairos.go` had been transferred. Brought in the needed ones, scrubbed molequla→kairos, and split by whether they touch the Go `*GPT` struct:

@@ -2,6 +2,8 @@
 *.o
 *.so
 *.dylib
+ariannamethod/kairos_train
+*.bin
 
 # internal logs (KAIROSLOG.md is the tracked one)
 LOCAL_STATE.md
