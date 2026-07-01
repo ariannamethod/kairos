@@ -10,7 +10,7 @@ package gotools
 
 /*
 #cgo linux CFLAGS: -DUSE_CUDA -I/usr/local/cuda/include
-#cgo linux LDFLAGS: -L/usr/local/lib -lnotorch_gpu -L/usr/local/cuda/lib64 -lcudart -lcublas -lstdc++ -L/usr/lib/x86_64-linux-gnu/openblas-pthread/ -lopenblas -lm
+#cgo linux LDFLAGS: -L${SRCDIR}/../ariannamethod -lkairos -Wl,-rpath,${SRCDIR}/../ariannamethod -L/usr/local/cuda/lib64 -lcudart -lcublas -lstdc++ -L/usr/lib/x86_64-linux-gnu/openblas-pthread/ -lopenblas -lm
 #include <notorch.h>
 
 // notorch_cuda.h pulls in the CUDA runtime headers, which the cgo C

@@ -9,7 +9,7 @@
 - Duplicate trainer removed: `aml_trainer.go` not transferred; the two `if CFG.Trainer=="aml"` dispatch branches and the `CFG.Trainer` field/default/`--trainer` flag removed — notorch is the only trainer.
 - cgo wired to the vendored engine (`ariannamethod/`, `libkairos`): darwin links `libkairos.dylib` + Accelerate + rpath; `cgo_aml.go` got the Accelerate/cblas header (dropped its inline `ariannamethod.c`). `linux-cpu` links the vendor `libkairos.so` (was system `-lnotorch`); `-lkairos` scoped to darwin so linux variants don't double-provide `nt_*`.
 - Verified: `CGO_ENABLED=1 go build ./roots/` → 9.9 MB binary on darwin (neo); gofmt clean. Codex audit: boundary PASS, export PASS, KEEP PASS; its two FAILs (stale `CFG.Trainer`, linux double-link) fixed as above.
-- OPEN (A40): the CUDA variant (`cgo_notorch_cuda.go`) still links system `-lnotorch_gpu`; the GPU build needs `libkairos` compiled `-DUSE_CUDA` on A40 — not verifiable from neo (darwin), as molequla's Go always built on A40.
+- All cgo variants now link the vendored `libkairos` (darwin `.dylib` + rpath; linux CPU and CUDA `.so` + rpath) — no more system `-lnotorch`/`-lnotorch_gpu`. OPEN (A40): the CUDA path additionally needs `libkairos` compiled `-DUSE_CUDA` (+ `notorch_cuda`, `-lcudart -lcublas`) on A40 — not verifiable from neo (darwin), as molequla's Go always built on A40.
 
 ### 2026-07-01 — vendor: fresh notorch + AML engine in `ariannamethod/`
 
