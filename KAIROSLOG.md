@@ -1,5 +1,16 @@
 ## LOG
 
+### 2026-07-01 — Go split: organism/trainer in `roots/`, generic glue in `go-tools/`
+
+- The Go organism (`roots/kairos.go`) needs ~15 companion `.go` files from molequla; only `kairos.go` had been transferred. Brought in the needed ones, scrubbed molequla→kairos, and split by whether they touch the Go `*GPT` struct:
+  - `roots/` (`package main`): trainer + model-physics — `notorch_trainer.go` (66 `*GPT` refs), `metaweights_overlay.go`, `metaweights_seeding.go`, `cross_graze.go`, `gpu_forward.go`, `gpu_forward_stub.go`.
+  - `go-tools/` (`package gotools`): generic cgo/glue (0 `*GPT` refs) — `cgo_notorch.go`, `cgo_aml.go`, `cgo_notorch_cpu.go`, `cgo_notorch_cuda.go`, `gpu_bindings_linux.go`, `gpu_bindings_stub.go`, `gpu_notorch_stub.go`, `spa_coherence.go`.
+- Package boundary: 43 `go-tools` symbols exported (lowercase→Uppercase) + ~92 call sites in `roots/` prefixed `gotools.`; `NTNanGuard.check`→`Check`; `go.mod` added (`module github.com/ariannamethod/kairos`). `go-tools` has zero `*GPT`/main-package refs → no circular import.
+- Duplicate trainer removed: `aml_trainer.go` not transferred; the two `if CFG.Trainer=="aml"` dispatch branches and the `CFG.Trainer` field/default/`--trainer` flag removed — notorch is the only trainer.
+- cgo wired to the vendored engine (`ariannamethod/`, `libkairos`): darwin links `libkairos.dylib` + Accelerate + rpath; `cgo_aml.go` got the Accelerate/cblas header (dropped its inline `ariannamethod.c`). `linux-cpu` links the vendor `libkairos.so` (was system `-lnotorch`); `-lkairos` scoped to darwin so linux variants don't double-provide `nt_*`.
+- Verified: `CGO_ENABLED=1 go build ./roots/` → 9.9 MB binary on darwin (neo); gofmt clean. Codex audit: boundary PASS, export PASS, KEEP PASS; its two FAILs (stale `CFG.Trainer`, linux double-link) fixed as above.
+- OPEN (A40): the CUDA variant (`cgo_notorch_cuda.go`) still links system `-lnotorch_gpu`; the GPU build needs `libkairos` compiled `-DUSE_CUDA` on A40 — not verifiable from neo (darwin), as molequla's Go always built on A40.
+
 ### 2026-07-01 — vendor: fresh notorch + AML engine in `ariannamethod/`
 
 - Created the `ariannamethod/` vendor at the repo root with the updated engine from upstream `notorch` (`b1959f4`) + `ariannamethod.ai` AML core (`9d80ac3`), replacing molequla's May-14 snapshot.

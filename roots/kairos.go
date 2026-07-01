@@ -7,6 +7,8 @@
 package main
 
 import (
+	gotools "github.com/ariannamethod/kairos/go-tools"
+
 	"bufio"
 	"database/sql"
 	"encoding/json"
@@ -16,8 +18,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,12 +46,12 @@ func init() { gradEnabled.Store(true) }
 
 type Config struct {
 	// data
-	CorpusPath     string  `json:"corpus_path"`
-	DBPath         string  `json:"db_path"`
-	CkptPath       string  `json:"ckpt_path"`
-	MaxCorpusLines int     `json:"max_corpus_lines"`
-	MaxLineChars   int     `json:"max_line_chars"`
-	MinNewChars    int     `json:"min_new_chars_to_train"`
+	CorpusPath     string `json:"corpus_path"`
+	DBPath         string `json:"db_path"`
+	CkptPath       string `json:"ckpt_path"`
+	MaxCorpusLines int    `json:"max_corpus_lines"`
+	MaxLineChars   int    `json:"max_line_chars"`
+	MinNewChars    int    `json:"min_new_chars_to_train"`
 	// DNAMinFragmentBytes — minimum DNA fragment size in bytes. A unified
 	// emit/consume gate: dnaWrite skips below this, dnaRead deletes below
 	// this. Replaces a desynced literal pair (write 5 / read 10) that
@@ -68,9 +70,9 @@ type Config struct {
 	BlockSize     int  `json:"block_size"`
 
 	// ontogenesis — growth stages (corpus_chars, n_embd, n_layer, n_head)
-	GrowthStages          [][4]int `json:"growth_stages"`
-	FreezeAfterGrowthSteps int     `json:"freeze_after_growth_steps"`
-	PostGrowthLRScale      float64 `json:"post_growth_lr_scale"` // LR multiplier during freeze period (prevents delta overfit to noise)
+	GrowthStages           [][4]int `json:"growth_stages"`
+	FreezeAfterGrowthSteps int      `json:"freeze_after_growth_steps"`
+	PostGrowthLRScale      float64  `json:"post_growth_lr_scale"` // LR multiplier during freeze period (prevents delta overfit to noise)
 
 	// training
 	WarmupSteps         int     `json:"warmup_steps"`
@@ -89,8 +91,8 @@ type Config struct {
 	// weak-sentence indices to stderr; does NOT reseed weak sentences yet
 	// (reseed is a Phase C activation step, requires GenerateResonant
 	// restructuring). See spa_coherence.go + PROJECT_LOG.md B1 step 3.
-	SPACoherenceGate  bool    `json:"spa_coherence_gate"`
-	SPAEmbedAlpha     float32 `json:"spa_embed_alpha"`
+	SPACoherenceGate bool    `json:"spa_coherence_gate"`
+	SPAEmbedAlpha    float32 `json:"spa_embed_alpha"`
 
 	// B2 — Q-style additive metaweights logit overlay.
 	// When CorpusLogitOverlay=true, GenerateResonant adds
@@ -101,20 +103,14 @@ type Config struct {
 	// additional, not replacement. Default off — RunPod toggles on for the
 	// before/after measurement run. Floor on log-prob for unseen tokens
 	// prevents -inf bias from masking valid model preferences.
-	CorpusLogitOverlay     bool    `json:"corpus_logit_overlay"`
-
-	// Trainer selects the training backend: "notorch" (compiled C tape,
-	// BLAS, automatic GPU — the default) or "aml" (the legacy AML-interpreter
-	// path, kept for the criterion-2 A/B speed comparison). See
-	// 06_PLAN_gpu_training.md §11.2.
-	Trainer string `json:"trainer"`
+	CorpusLogitOverlay bool `json:"corpus_logit_overlay"`
 
 	// UseGPU routes per-matrix Matvec calls through cuBLAS sgemm on Linux
 	// builds (see gpu_bindings_linux.go + gpu_forward.go). Inference-only:
 	// gradEnabled gates training back to the CPU/BLAS path. Default off — same
 	// binary runs unchanged on macOS / non-CUDA hosts; on a CUDA pod the
 	// --gpu flag plus a successful gpu_init() enables the fast path.
-	UseGPU                 bool    `json:"use_gpu"`
+	UseGPU bool `json:"use_gpu"`
 
 	// CrossGraze enables Dario-style cross-organism logit injection during
 	// generation (cross_graze.go). Each organism's MaybeRefresh() reads recent
@@ -123,47 +119,47 @@ type Config struct {
 	// the overlay'd logits before sampling. Default off; activate with
 	// --cross-graze. Requires --element to be set (single-organism runs have
 	// no peers).
-	CrossGraze             bool    `json:"cross_graze"`
+	CrossGraze bool `json:"cross_graze"`
 	// CrossGrazeCoef — weightless-mode coefficient on the rank-1 token. Falls
 	// off as coef/(1+rank). Default 2.0 matches Q's c_doc-equivalent
 	// magnitude (postgpt_q.c:1361 weightless-regime range).
-	CrossGrazeCoef         float64 `json:"cross_graze_coef"`
+	CrossGrazeCoef float64 `json:"cross_graze_coef"`
 	// CrossGrazeTopN — how many most-recent tokens per sibling participate.
 	// Default 8 mirrors Q's interf_signal_chunk MAX_HEAVY/2 effective use.
-	CrossGrazeTopN         int     `json:"cross_graze_top_n"`
-	MetaCBigram            float64 `json:"meta_c_bigram"`
-	MetaCTrigram           float64 `json:"meta_c_trigram"`
-	MetaCHebbian           float64 `json:"meta_c_hebbian"`
-	MetaCDestiny           float64 `json:"meta_c_destiny"`
-	MetaCProphecy          float64 `json:"meta_c_prophecy"`
-	MetaProphecyDecay      float64 `json:"meta_prophecy_decay"`
-	MetaLogitOverlayFloor  float64 `json:"meta_logit_overlay_floor"`
+	CrossGrazeTopN        int     `json:"cross_graze_top_n"`
+	MetaCBigram           float64 `json:"meta_c_bigram"`
+	MetaCTrigram          float64 `json:"meta_c_trigram"`
+	MetaCHebbian          float64 `json:"meta_c_hebbian"`
+	MetaCDestiny          float64 `json:"meta_c_destiny"`
+	MetaCProphecy         float64 `json:"meta_c_prophecy"`
+	MetaProphecyDecay     float64 `json:"meta_prophecy_decay"`
+	MetaLogitOverlayFloor float64 `json:"meta_logit_overlay_floor"`
 
 	// cosine LR schedule
-	LRMin              float64 `json:"lr_min"`
-	MaxTotalSteps      int     `json:"max_total_steps"`
-	CosineWarmupSteps  int     `json:"cosine_warmup_steps"`
+	LRMin             float64 `json:"lr_min"`
+	MaxTotalSteps     int     `json:"max_total_steps"`
+	CosineWarmupSteps int     `json:"cosine_warmup_steps"`
 
 	// gradient accumulation
 	AccumSteps int `json:"accum_steps"`
 
 	// deltas
-	DeltaRank      int     `json:"delta_rank"`
-	RRPRAMRank     int     `json:"rrpram_rank"` // low-rank RRPRAM factor rank (Inc2)
-	MaxDeltaModules int    `json:"max_delta_modules"`
-	DeltaGrowProb  float64 `json:"delta_grow_prob"`
+	DeltaRank       int     `json:"delta_rank"`
+	RRPRAMRank      int     `json:"rrpram_rank"` // low-rank RRPRAM factor rank (Inc2)
+	MaxDeltaModules int     `json:"max_delta_modules"`
+	DeltaGrowProb   float64 `json:"delta_grow_prob"`
 
 	// generation
-	Temperature    float64 `json:"temperature"`
-	TopK           int     `json:"top_k"`
-	TopP           float64 `json:"top_p"`
-	MinP           float64 `json:"min_p"`     // GPT-3/4 style: filter tokens below min_p * max_prob
-	TypicalP       float64 `json:"typical_p"` // Typical sampling: prefer tokens with typical information content
-	MaxGenTokens   int     `json:"max_gen_tokens"`
-	MinGenTokens   int     `json:"min_gen_tokens"`
+	Temperature     float64 `json:"temperature"`
+	TopK            int     `json:"top_k"`
+	TopP            float64 `json:"top_p"`
+	MinP            float64 `json:"min_p"`     // GPT-3/4 style: filter tokens below min_p * max_prob
+	TypicalP        float64 `json:"typical_p"` // Typical sampling: prefer tokens with typical information content
+	MaxGenTokens    int     `json:"max_gen_tokens"`
+	MinGenTokens    int     `json:"min_gen_tokens"`
 	RepetitionGuard int     `json:"repetition_guard"`
-	FreqPenalty     float64 `json:"freq_penalty"`      // penalize logits by count * freq_penalty
-	PresencePenalty float64 `json:"presence_penalty"`   // flat penalty for any token that appeared
+	FreqPenalty     float64 `json:"freq_penalty"`     // penalize logits by count * freq_penalty
+	PresencePenalty float64 `json:"presence_penalty"` // flat penalty for any token that appeared
 
 	// tokenizer evolution
 	EnableBPEAfterChars  int `json:"enable_bpe_after_chars"`
@@ -174,8 +170,8 @@ type Config struct {
 	TrainTickSeconds float64 `json:"train_tick_seconds"`
 
 	// hybrid attention heads: "content", "rrpram", or "hybrid"
-	HeadTypes        []string `json:"head_types"`
-	HybridAlphaInit  float64  `json:"hybrid_alpha_init"`
+	HeadTypes       []string `json:"head_types"`
+	HybridAlphaInit float64  `json:"hybrid_alpha_init"`
 
 	// gamma (personality fingerprint)
 	GammaSparsityThreshold float64 `json:"gamma_sparsity_threshold"`
@@ -191,12 +187,12 @@ type Config struct {
 	EntropyTempFocus float64 `json:"entropy_temp_focus"`
 
 	// corpus field
-	CorpusGenMaxTokens   int     `json:"corpus_gen_max_tokens"`
-	CorpusFadeK          float64 `json:"corpus_fade_k"`          // sigmoid steepness for corpus→model transition
-	CorpusFadeThreshold  float64 `json:"corpus_fade_threshold"`  // entropy at which blend is 50/50
-	CooccurWindowSize    int     `json:"cooccur_window_size"`    // co-occurrence proximity window (Stanley-style)
-	UserBoostStrength    float64 `json:"user_boost_strength"`    // how strongly user's recent words are boosted
-	UserBoostDecay       float64 `json:"user_boost_decay"`       // per-generation decay of user word boost
+	CorpusGenMaxTokens  int     `json:"corpus_gen_max_tokens"`
+	CorpusFadeK         float64 `json:"corpus_fade_k"`         // sigmoid steepness for corpus→model transition
+	CorpusFadeThreshold float64 `json:"corpus_fade_threshold"` // entropy at which blend is 50/50
+	CooccurWindowSize   int     `json:"cooccur_window_size"`   // co-occurrence proximity window (Stanley-style)
+	UserBoostStrength   float64 `json:"user_boost_strength"`   // how strongly user's recent words are boosted
+	UserBoostDecay      float64 `json:"user_boost_decay"`      // per-generation decay of user word boost
 
 	// quantum buffer
 	QBMinBytes        int     `json:"qb_min_bytes"`
@@ -217,16 +213,15 @@ type Config struct {
 	CheckpointMinInterval  float64 `json:"checkpoint_min_interval"`   // write-storm throttle: min seconds between DEFAULT-path (periodic) full-model JSON checkpoints (0 = no throttle). Explicit-path saves (mitosis parent ckpt) are never throttled.
 
 	// consciousness: per-token dissonance feedback
-	DissonanceEMAAlpha      float64 `json:"dissonance_ema_alpha"`       // EMA smoothing for entropy within generation
-	DissonanceSpikeK        float64 `json:"dissonance_spike_k"`         // temp multiplier when entropy spikes
-	DissonanceDropK         float64 `json:"dissonance_drop_k"`          // temp multiplier when entropy drops
+	DissonanceEMAAlpha       float64 `json:"dissonance_ema_alpha"`       // EMA smoothing for entropy within generation
+	DissonanceSpikeK         float64 `json:"dissonance_spike_k"`         // temp multiplier when entropy spikes
+	DissonanceDropK          float64 `json:"dissonance_drop_k"`          // temp multiplier when entropy drops
 	DissonanceSpikeThreshold float64 `json:"dissonance_spike_threshold"` // entropy/EMA ratio triggering spike
 	DissonanceDropThreshold  float64 `json:"dissonance_drop_threshold"`  // entropy/EMA ratio triggering drop
 
 	// consciousness: pattern breaking (anti-field generation)
 	AntiFieldProb    float64 `json:"anti_field_prob"`     // probability of pure-model token (bypass corpus)
 	AntiFieldMinStep int     `json:"anti_field_min_step"` // don't anti-field before this many tokens
-
 
 	// consciousness: conscience (self-editing)
 	ConscienceWindow   int     `json:"conscience_window"`   // rolling window for generation entropy trend
@@ -235,25 +230,25 @@ type Config struct {
 	ConscienceFloor    float64 `json:"conscience_floor"`    // minimum deltaAlphaScale
 
 	// notorch: gradient-free delta training (ported from AML C)
-	NotorchLR          float64 `json:"notorch_lr"`          // learning rate for notorch step
-	NotorchDecay       float64 `json:"notorch_decay"`       // adaptive weight decay
-	CoordinateWarmup   bool    `json:"coordinate_warmup"`   // true = warmup through training queue (for Mac 8GB)
+	NotorchLR        float64 `json:"notorch_lr"`        // learning rate for notorch step
+	NotorchDecay     float64 `json:"notorch_decay"`     // adaptive weight decay
+	CoordinateWarmup bool    `json:"coordinate_warmup"` // true = warmup through training queue (for Mac 8GB)
 }
 
 var CFG = Config{
-	CorpusPath:           "kairos.txt",
-	DBPath:               "memory.sqlite3",
-	CkptPath:             "kairos_ckpt.json",
-	MaxCorpusLines:       8000,
-	MaxLineChars:         240,
-	MinNewChars:          480,
-	DNAMinFragmentBytes:  5, // unified DNA emit+consume gate (Fix A)
+	CorpusPath:             "kairos.txt",
+	DBPath:                 "memory.sqlite3",
+	CkptPath:               "kairos_ckpt.json",
+	MaxCorpusLines:         8000,
+	MaxLineChars:           240,
+	MinNewChars:            480,
+	DNAMinFragmentBytes:    5,    // unified DNA emit+consume gate (Fix A)
 	DNAFragmentTargetBytes: 5000, // dnaWrite pads fragments toward this (Fix B; 200→600→5000 2026-06-03: per-tick cost grows with model size so ingestion/tick must too — real corpus text, not seeding; corpus FILE capped at MaxCorpusLines so field-rebuild stays bounded while the monotonic ingest clock climbs fast)
-	TieEmbeddings:        true,
-	NLayer:               1,
-	NEmbd:                16,
-	NHead:                1,
-	BlockSize:            96,
+	TieEmbeddings:          true,
+	NLayer:                 1,
+	NEmbd:                  16,
+	NHead:                  1,
+	BlockSize:              96,
 
 	GrowthStages: [][4]int{
 		{0, 16, 1, 1},       // embryo: ~10K params
@@ -265,50 +260,49 @@ var CFG = Config{
 	},
 	FreezeAfterGrowthSteps: 500,
 	PostGrowthLRScale:      0.3,
-	WarmupSteps:          400,
-	CrossGrazeCoef:       2.0, // Q-style weightless-regime c_doc magnitude
-	CrossGrazeTopN:       8,   // last 8 sibling tokens per buffer at rank-decay
-	MicroSteps:           32,
-	LearningRate:         0.01,
-	Beta1:                0.9,
-	Beta2:                0.99,
-	EpsAdam:              1e-8,
-	GradClip:             1.0,
-	FreezeBaseAfterWarm:  true,
-	BatchSize:            4,
-	SPACoherenceGate:     false,
-	SPAEmbedAlpha:        0.85, // Q's default (q/README.md:179)
-	CorpusLogitOverlay:   false,
-	Trainer:              "notorch",
-	MetaCBigram:          15.0, // Q's weightless default (q/README.md:53)
-	MetaCTrigram:         10.0, // Q's weightless default (q/README.md:53)
-	MetaCHebbian:         1.0,  // Q's weightless default (q/README.md:53, c_heb)
-	MetaCDestiny:         0.15, // Q's weightless default (q/README.md:53, c_ds)
-	MetaCProphecy:        0.7,  // Q's weightless default (q/README.md:53, c_pro)
-	MetaProphecyDecay:    0.95, // age multiplier per generation step
-	MetaLogitOverlayFloor: 1e-6,
-	LRMin:                0.001,
-	MaxTotalSteps:        50000,
-	CosineWarmupSteps:    200,
-	AccumSteps:           1,
-	DeltaRank:            8,
-	RRPRAMRank:           32,
-	MaxDeltaModules:      12,
-	DeltaGrowProb:        0.08,
-	Temperature:          0.85,
-	TopK:                 40,
-	TopP:                 0.92,
-	MinP:                 0.06,
-	TypicalP:             0.95,
-	MaxGenTokens:         180,
-	MinGenTokens:         16,
-	RepetitionGuard:      4,
-	FreqPenalty:          0.1,
-	PresencePenalty:      0.1,
-	EnableBPEAfterChars:  20000,
-	BPENumMerges:         384,
-	BPERetrainEveryChars: 4000,
-	TrainTickSeconds:     0.25,
+	WarmupSteps:            400,
+	CrossGrazeCoef:         2.0, // Q-style weightless-regime c_doc magnitude
+	CrossGrazeTopN:         8,   // last 8 sibling tokens per buffer at rank-decay
+	MicroSteps:             32,
+	LearningRate:           0.01,
+	Beta1:                  0.9,
+	Beta2:                  0.99,
+	EpsAdam:                1e-8,
+	GradClip:               1.0,
+	FreezeBaseAfterWarm:    true,
+	BatchSize:              4,
+	SPACoherenceGate:       false,
+	SPAEmbedAlpha:          0.85, // Q's default (q/README.md:179)
+	CorpusLogitOverlay:     false,
+	MetaCBigram:            15.0, // Q's weightless default (q/README.md:53)
+	MetaCTrigram:           10.0, // Q's weightless default (q/README.md:53)
+	MetaCHebbian:           1.0,  // Q's weightless default (q/README.md:53, c_heb)
+	MetaCDestiny:           0.15, // Q's weightless default (q/README.md:53, c_ds)
+	MetaCProphecy:          0.7,  // Q's weightless default (q/README.md:53, c_pro)
+	MetaProphecyDecay:      0.95, // age multiplier per generation step
+	MetaLogitOverlayFloor:  1e-6,
+	LRMin:                  0.001,
+	MaxTotalSteps:          50000,
+	CosineWarmupSteps:      200,
+	AccumSteps:             1,
+	DeltaRank:              8,
+	RRPRAMRank:             32,
+	MaxDeltaModules:        12,
+	DeltaGrowProb:          0.08,
+	Temperature:            0.85,
+	TopK:                   40,
+	TopP:                   0.92,
+	MinP:                   0.06,
+	TypicalP:               0.95,
+	MaxGenTokens:           180,
+	MinGenTokens:           16,
+	RepetitionGuard:        4,
+	FreqPenalty:            0.1,
+	PresencePenalty:        0.1,
+	EnableBPEAfterChars:    20000,
+	BPENumMerges:           384,
+	BPERetrainEveryChars:   4000,
+	TrainTickSeconds:       0.25,
 
 	HeadTypes:              []string{"content"},
 	HybridAlphaInit:        0.5,
@@ -899,9 +893,9 @@ func (m *MatrixParam) Matvec(x *Vec) *Vec {
 	// ~12ms across a full 180-token generation chain (negligible at 8h
 	// timescale) while the GPU stays primed for the automatic transition
 	// to material speedup once organisms grow past adolescent (NEmbd=128
-	// onwards). Same binary on macOS / non-CUDA: gpuReady() returns false
+	// onwards). Same binary on macOS / non-CUDA: gotools.GpuReady() returns false
 	// and m.gpuKey stays empty, so the CPU path runs identically.
-	if CFG.UseGPU && gpuReady() && !gradEnabled.Load() && m.gpuKey != "" {
+	if CFG.UseGPU && gotools.GpuReady() && !gradEnabled.Load() && m.gpuKey != "" {
 		if gpuOut := m.MatvecGPU(x); gpuOut != nil {
 			return gpuOut
 		}
@@ -918,7 +912,7 @@ func (m *MatrixParam) Matvec(x *Vec) *Vec {
 		for i := 0; i < nout; i++ {
 			copy(packed[i*nin:], m.Rows[i].Data[:nin])
 		}
-		outData = blasDgemv(packed, nout, nin, x.Data)
+		outData = gotools.BlasDgemv(packed, nout, nin, x.Data)
 	} else {
 		outData = make([]float64, nout)
 		for i := 0; i < nout; i++ {
@@ -1524,7 +1518,7 @@ func (t *EvolvingTokenizer) trainBPELocked(docs []string, numMerges int) {
 	}
 
 	// Build vocab: token sequence → frequency
-	vocab := make(map[string]int)    // key = null-separated token names
+	vocab := make(map[string]int) // key = null-separated token names
 	symSeqs := make(map[string][]string)
 
 	for _, seg := range segments {
@@ -1775,9 +1769,9 @@ type GammaStatsResult struct {
 // layerKeySet holds pre-computed string keys for a single layer, avoiding fmt.Sprintf per call.
 type layerKeySet struct {
 	wq, wk, wv, wo, fcG, fcV, fc2 string
-	wrA, wrB    string   // per-layer low-rank RRPRAM factors (Inc2, Resonance form)
-	headPattern []string // per head (legacy position-bias, retired by Inc2)
-	headAlpha   []string // per head
+	wrA, wrB                      string   // per-layer low-rank RRPRAM factors (Inc2, Resonance form)
+	headPattern                   []string // per head (legacy position-bias, retired by Inc2)
+	headAlpha                     []string // per head
 }
 
 // GPT is the full model.
@@ -1796,9 +1790,9 @@ type GPT struct {
 
 	InitEmbedSnapshot [][]float64 // snapshot of initial embeddings for gamma
 
-	residualAlpha    float64 // 1/sqrt(nLayer) scaling for residual connections
-	globalStep       int     // global training step counter (for cosine LR + checkpoint)
-	syntropyTempOff  float64 // temperature offset from syntropy state (-0.05 to +0.05)
+	residualAlpha   float64 // 1/sqrt(nLayer) scaling for residual connections
+	globalStep      int     // global training step counter (for cosine LR + checkpoint)
+	syntropyTempOff float64 // temperature offset from syntropy state (-0.05 to +0.05)
 
 	growthFreezeRemaining int // ontogenesis: freeze base after growth, train only deltas
 	growthStepOffset      int // reset to globalStep on each growth — for LR warmup phase
@@ -2302,9 +2296,9 @@ func (gpt *GPT) MaybeGrowArchitecture() bool {
 				}
 			}
 			type fcSpec struct {
-				key        string
-				noutMul    int
-				ninMul     int
+				key     string
+				noutMul int
+				ninMul  int
 			}
 			fcSpecs := []fcSpec{
 				{pfx + "fc_g", 4, 1},
@@ -2961,8 +2955,8 @@ func (gpt *GPT) ForwardStep(tokenID, posID int, keys, values [][]*Vec) *Vec {
 		gpt.mlpInputs[li] = x
 
 		g := gpt.applyWithDeltas(lk.fcG, x).SiLU() // gate (SwiGLU)
-		u := gpt.applyWithDeltas(lk.fcV, x)         // value
-		mlpX := g.MulVec(u)                          // gating
+		u := gpt.applyWithDeltas(lk.fcV, x)        // value
+		mlpX := g.MulVec(u)                        // gating
 
 		// notorch: save g*u intermediate for fc2 adapter input (4*NEmbd dimension)
 		gpt.mlpIntermediates[li] = mlpX
@@ -3047,7 +3041,7 @@ func (gpt *GPT) GenerateSentence(promptText string) string {
 	// it any backgroundTrainer burst that mutated weights since the last
 	// upload would leak stale activations into the GPU path. Per Opus
 	// subagent audit 2026-05-14 P1.
-	if CFG.UseGPU && gpuReady() {
+	if CFG.UseGPU && gotools.GpuReady() {
 		gpuRefreshWeights(gpt)
 	}
 
@@ -3088,8 +3082,8 @@ func (gpt *GPT) GenerateSentence(promptText string) string {
 	// Consciousness: per-token dissonance tracking (Feature 1)
 	entropyEMA := 0.0
 	entropyEMAInit := false
-	lowDropCount := 0    // consecutive tokens below drop threshold
-	entropySum := 0.0    // for conscience mean entropy
+	lowDropCount := 0 // consecutive tokens below drop threshold
+	entropySum := 0.0 // for conscience mean entropy
 	entropyCount := 0
 	tokenCounts := make(map[int]int) // frequency penalty: count of each generated token
 
@@ -3464,7 +3458,6 @@ func (gpt *GPT) ComputeSelfPredictionError(ids []int) float64 {
 	return totalCE / float64(count)
 }
 
-
 // ============================================================
 // 6) SQLITE MEMORY — and a small ghost shall remember
 // ============================================================
@@ -3783,27 +3776,27 @@ func computeNewCorpusMass(db *sql.DB, lastEventID int) (int, int) {
 // ============================================================
 
 type CheckpointJSON struct {
-	Cfg       json.RawMessage            `json:"cfg"`
-	Tokenizer TokenizerJSON              `json:"tokenizer"`
-	Base      map[string][][][]float64   `json:"base"`  // name -> rows -> cols (but we store as [][]float64)
-	Alpha     []float64                  `json:"alpha"`
-	Deltas    []map[string]DeltaJSON     `json:"deltas"`
+	Cfg       json.RawMessage          `json:"cfg"`
+	Tokenizer TokenizerJSON            `json:"tokenizer"`
+	Base      map[string][][][]float64 `json:"base"` // name -> rows -> cols (but we store as [][]float64)
+	Alpha     []float64                `json:"alpha"`
+	Deltas    []map[string]DeltaJSON   `json:"deltas"`
 }
 
 func intPtr(v int) *int { return &v }
 
 // We need a different approach - Base stores name -> [][]float64 (matrix rows)
 type CheckpointData struct {
-	Cfg               json.RawMessage        `json:"cfg"`
-	Tokenizer         TokenizerJSON          `json:"tokenizer"`
-	Base              map[string][][]float64 `json:"base"`
-	Alpha             []float64              `json:"alpha"`
-	Deltas            []map[string]DeltaJSON `json:"deltas"`
-	InitEmbedSnapshot [][]float64            `json:"init_embed_snapshot,omitempty"`
-	GlobalStep        int                    `json:"global_step"`
-	GrowthStepOffset  int                    `json:"growth_step_offset"`
-	LastWarmupStage   *int                   `json:"last_warmup_stage,omitempty"`
-	CorpusIngestedTotal int                  `json:"corpus_ingested_total"`
+	Cfg                 json.RawMessage        `json:"cfg"`
+	Tokenizer           TokenizerJSON          `json:"tokenizer"`
+	Base                map[string][][]float64 `json:"base"`
+	Alpha               []float64              `json:"alpha"`
+	Deltas              []map[string]DeltaJSON `json:"deltas"`
+	InitEmbedSnapshot   [][]float64            `json:"init_embed_snapshot,omitempty"`
+	GlobalStep          int                    `json:"global_step"`
+	GrowthStepOffset    int                    `json:"growth_step_offset"`
+	LastWarmupStage     *int                   `json:"last_warmup_stage,omitempty"`
+	CorpusIngestedTotal int                    `json:"corpus_ingested_total"`
 }
 
 type TokenizerJSON struct {
@@ -3910,13 +3903,13 @@ func SaveCheckpoint(model *GPT, tok *EvolvingTokenizer, path string) error {
 			Merges:       merges,
 			TrainedChars: tok.TrainedChars,
 		},
-		Base:              base,
-		Alpha:             model.ActiveAlpha,
-		Deltas:            deltas,
-		InitEmbedSnapshot: model.InitEmbedSnapshot,
-		GlobalStep:        model.globalStep,
-		GrowthStepOffset:  model.growthStepOffset,
-		LastWarmupStage:   intPtr(model.lastWarmupStage),
+		Base:                base,
+		Alpha:               model.ActiveAlpha,
+		Deltas:              deltas,
+		InitEmbedSnapshot:   model.InitEmbedSnapshot,
+		GlobalStep:          model.globalStep,
+		GrowthStepOffset:    model.growthStepOffset,
+		LastWarmupStage:     intPtr(model.lastWarmupStage),
 		CorpusIngestedTotal: model.corpusIngestedTotal,
 	}
 
@@ -4154,10 +4147,10 @@ func (qb *QuantumBuffer) Reset() {
 type CooccurField struct {
 	Unigram          map[int]float64
 	BigramByFirst    map[int]map[int]float64    // prev → {next: count}
-	TrigramByContext map[[2]int]map[int]float64  // [prev2,prev1] → {next: count}
-	FourgramByCtx    map[[3]int]map[int]float64  // [prev3,prev2,prev1] → {next: count}
-	CooccurWindow    map[int]map[int]float64     // token → {nearby_token: count} (Stanley-style proximity)
-	UserBoost        map[int]float64             // temporary user word boosts (Leo-style)
+	TrigramByContext map[[2]int]map[int]float64 // [prev2,prev1] → {next: count}
+	FourgramByCtx    map[[3]int]map[int]float64 // [prev3,prev2,prev1] → {next: count}
+	CooccurWindow    map[int]map[int]float64    // token → {nearby_token: count} (Stanley-style proximity)
+	UserBoost        map[int]float64            // temporary user word boosts (Leo-style)
 	Built            bool
 	mu               sync.RWMutex // RWMutex: reads (SampleNext) don't block each other
 }
@@ -4478,7 +4471,7 @@ func GenerateResonant(model *GPT, tok *EvolvingTokenizer, field *CooccurField, p
 	// mutation since the last call (training burst, vocab growth, mitosis
 	// inheritance) is re-uploaded so the per-token Matvec dispatch sees fresh
 	// device data. No-op on non-linux / when --gpu is off.
-	if CFG.UseGPU && gpuReady() {
+	if CFG.UseGPU && gotools.GpuReady() {
 		gpuRefreshWeights(model)
 	}
 
@@ -4976,15 +4969,15 @@ func GenerateResonant(model *GPT, tok *EvolvingTokenizer, field *CooccurField, p
 					}
 					sentTokens[i] = enc
 				}
-				scores := SPACoherenceScores(W, sentTokens, D, CFG.SPAEmbedAlpha)
-				weakIdx := SPAWeakestIndex(scores)
+				scores := gotools.SPACoherenceScores(W, sentTokens, D, CFG.SPAEmbedAlpha)
+				weakIdx := gotools.SPAWeakestIndex(scores)
 				if weakIdx >= 0 {
 					var sum float32
 					for _, s := range scores {
 						sum += s
 					}
 					avg := sum / float32(len(scores))
-					threshold := SPAWeakThresholdRatio * avg
+					threshold := gotools.SPAWeakThresholdRatio * avg
 					fmt.Fprintf(os.Stderr,
 						"[spa] S=%d weakest=%d score=%.3f avg=%.3f thr=%.3f\n",
 						len(sentences), weakIdx, scores[weakIdx], avg, threshold)
@@ -5006,7 +4999,7 @@ func GenerateResonant(model *GPT, tok *EvolvingTokenizer, field *CooccurField, p
 							regenerated := GenerateResonant(model, tok, field, seedPrompt, docs, true)
 							CFG.SPACoherenceGate = savedSPA
 							regenerated = strings.TrimSpace(regenerated)
-							newSentence := strings.TrimSpace(firstSentence(regenerated))
+							newSentence := strings.TrimSpace(gotools.FirstSentence(regenerated))
 							if len(newSentence) >= 4 && newSentence != sentences[weakIdx] {
 								response = strings.Replace(response, sentences[weakIdx], newSentence, 1)
 								fmt.Fprintf(os.Stderr,
@@ -5050,14 +5043,14 @@ type SwarmPeerInfo struct {
 }
 
 type SyntropyTracker struct {
-	EntropyHistory   []float64 // rolling window of model entropy
-	SyntropyTrend    float64   // positive = organizing, negative = dissolving
-	FieldDeviation   float64   // how far from corpus physics
-	PurposeMagnitude float64   // strength of current learning direction
-	PurposeAlignment float64   // cosine(purpose, gamma)
-	LastAction       string    // what was decided last time
-	BurstHistory     []BurstRecord // last 16 burst outcomes — training efficiency memory
-	ModelStage       int       // current growth stage (set during measure)
+	EntropyHistory   []float64      // rolling window of model entropy
+	SyntropyTrend    float64        // positive = organizing, negative = dissolving
+	FieldDeviation   float64        // how far from corpus physics
+	PurposeMagnitude float64        // strength of current learning direction
+	PurposeAlignment float64        // cosine(purpose, gamma)
+	LastAction       string         // what was decided last time
+	BurstHistory     []BurstRecord  // last 16 burst outcomes — training efficiency memory
+	ModelStage       int            // current growth stage (set during measure)
 	SwarmInfo        *SwarmPeerInfo // peer state from mesh.db (set externally)
 }
 
@@ -5964,10 +5957,6 @@ func parseCLIArgs() (organismID string, configPath string, element string, evolu
 			CFG.SPACoherenceGate = true
 		} else if os.Args[i] == "--corpus-overlay" {
 			CFG.CorpusLogitOverlay = true
-		} else if os.Args[i] == "--trainer" && i+1 < len(os.Args) {
-			// "notorch" (default) or "aml" — selects the training backend.
-			CFG.Trainer = os.Args[i+1]
-			i++
 		} else if os.Args[i] == "--zero-warmup" {
 			// Skip all per-stage warmup training. Used to test pure
 			// Q-style zero-training coherence: embryo organism receives only
@@ -5975,7 +5964,7 @@ func parseCLIArgs() (organismID string, configPath string, element string, evolu
 			CFG.WarmupSteps = 0
 		} else if os.Args[i] == "--gpu" {
 			// Route inference Matvec through cuBLAS sgemm. Linux-only at
-			// runtime (gpuReady() returns false elsewhere). Training stays
+			// runtime (gotools.GpuReady() returns false elsewhere). Training stays
 			// CPU/BLAS — autograd graph requires host tensors. See
 			// gpu_bindings_linux.go + gpu_forward.go.
 			CFG.UseGPU = true
@@ -5990,7 +5979,6 @@ func parseCLIArgs() (organismID string, configPath string, element string, evolu
 	}
 	return
 }
-
 
 // cosineLR returns learning rate for the given global step using cosine schedule with linear warmup.
 // stepsSinceGrowth enables LR ramp-up after each growth event (new weights need high LR initially).
@@ -6104,12 +6092,12 @@ func backgroundTrainer(db *sql.DB, model *GPT, tok *EvolvingTokenizer, qbuf *Qua
 	syntracker := NewSyntropyTracker()
 	field := NewCooccurField()
 	tickCount := 0
-	var docs []string     // persists across ticks; reloaded throttled (see loop)
+	var docs []string      // persists across ticks; reloaded throttled (see loop)
 	lastFieldRebuild := -1 // tick of last corpus reload + field rebuild
 	// Stage-gated GPU: tiny stages run faster on CPU (kernel-launch overhead
 	// dwarfs the small matmuls — measured 8 steps/s on GPU at child vs ~90 on
 	// CPU); GPU pays off only at teen/adult. Match the current (seed) stage.
-	ntSetGPUForStage(model.CurrentGrowthStage())
+	gotools.NtSetGPUForStage(model.CurrentGrowthStage())
 
 	// Inherit burst_history from parent (mitosis lineage)
 	if len(model.inheritedBurstHistory) > 0 {
@@ -6174,17 +6162,17 @@ func backgroundTrainer(db *sql.DB, model *GPT, tok *EvolvingTokenizer, qbuf *Qua
 				warmupScale = 1
 			}
 			effectiveWarmup := CFG.WarmupSteps * warmupScale
-			backpropSteps := effectiveWarmup  // 100% backprop, notorch warmup disabled (was 0.6)
-			notorchDeltaSteps := 0  // disabled: notorch warmup diverges at stage 5
+			backpropSteps := effectiveWarmup // 100% backprop, notorch warmup disabled (was 0.6)
+			notorchDeltaSteps := 0           // disabled: notorch warmup diverges at stage 5
 			fmt.Printf("[trainer] warmup for stage %d (embd=%d) — %d steps total (%d backprop + %d notorch, sqrt-scaled %dx)\n",
 				currentStage, model.NEmbd, effectiveWarmup, backpropSteps, notorchDeltaSteps, warmupScale)
 			// Phase A: backprop with progressive sequence length (short→full)
 			earlySteps := int(float64(backpropSteps) * 0.4)
 			midSteps := int(float64(backpropSteps) * 0.3)
 			lateSteps := backpropSteps - earlySteps - midSteps
-			ntWarmupTrain(model, tok, docs, earlySteps, 8)   // very short seqs, batch=1
-			ntWarmupTrain(model, tok, docs, midSteps, 16)    // short seqs, batch=1
-			ntWarmupTrain(model, tok, docs, lateSteps, 32)   // medium seqs, batch=1
+			ntWarmupTrain(model, tok, docs, earlySteps, 8) // very short seqs, batch=1
+			ntWarmupTrain(model, tok, docs, midSteps, 16)  // short seqs, batch=1
+			ntWarmupTrain(model, tok, docs, lateSteps, 32) // medium seqs, batch=1
 			// Phase B: notorch for delta adapters (40%, no autograd = much faster)
 			// notorchTrainSteps DISABLED in warmup — diverges at stage 5 (loss 3.5→116)
 			// notorchTrainSteps(model, tok, docs, notorchDeltaSteps, CFG.NotorchLR)
@@ -6329,8 +6317,8 @@ func backgroundTrainer(db *sql.DB, model *GPT, tok *EvolvingTokenizer, qbuf *Qua
 			model.mu.Lock()
 			fmt.Printf("[debug-onto] tick=%d corpus=%d ingested=%d stage=%d freeze=%d\n", tickCount, corpusChars, model.corpusIngestedTotal, model.CurrentGrowthStage(), model.growthFreezeRemaining)
 			if model.MaybeGrowArchitecture() {
-				ntOnGrowth()                                    // reset the notorch tape — Net2Net changed dims (06_PLAN S1)
-				ntSetGPUForStage(model.CurrentGrowthStage())    // flip CPU→GPU at teen/adult
+				ntOnGrowth()                                         // reset the notorch tape — Net2Net changed dims (06_PLAN S1)
+				gotools.NtSetGPUForStage(model.CurrentGrowthStage()) // flip CPU→GPU at teen/adult
 				SaveCheckpoint(model, tok, "")
 				nP := 0
 				for _, m := range model.Base {
@@ -6473,11 +6461,11 @@ func main() {
 	organismID, configPath, element, evolution := parseCLIArgs()
 
 	// GPU init: attempted only when --gpu (CFG.UseGPU) requested. Silent
-	// fallback if init fails — gpuReady() stays false and the Matvec
+	// fallback if init fails — gotools.GpuReady() stays false and the Matvec
 	// dispatcher continues to use the CPU/BLAS path. Linux only at runtime
 	// (the stub on other platforms returns -1 immediately).
 	if CFG.UseGPU {
-		if rc := gpuInit(); rc != 0 || !gpuReady() {
+		if rc := gotools.GpuInit(); rc != 0 || !gotools.GpuReady() {
 			fmt.Fprintf(os.Stderr, "[gpu] init failed (rc=%d); falling back to CPU/BLAS\n", rc)
 			CFG.UseGPU = false
 		} else {
@@ -6490,7 +6478,7 @@ func main() {
 	// on failure the trainer stays on CPU/BLAS. Automatic, no flag. The real
 	// bodies are in gpu_notorch_cuda.go (built with -tags cuda); the !cuda
 	// stub keeps the default CPU build a no-op.
-	if _, msg := ntGPUEnable(); msg != "" {
+	if _, msg := gotools.NtGPUEnable(); msg != "" {
 		fmt.Fprintln(os.Stderr, "[notorch] "+msg)
 	}
 
@@ -6642,17 +6630,17 @@ func main() {
 			}
 			effectiveWarmup := CFG.WarmupSteps * warmupScale
 			if effectiveWarmup > 0 {
-				backpropSteps := effectiveWarmup  // 100% backprop, notorch warmup disabled (was 0.6)
-				notorchDeltaSteps := 0  // disabled: notorch warmup diverges at stage 5
+				backpropSteps := effectiveWarmup // 100% backprop, notorch warmup disabled (was 0.6)
+				notorchDeltaSteps := 0           // disabled: notorch warmup diverges at stage 5
 				fmt.Printf("[init] Stage %d (%s): embd=%d, layer=%d, head=%d — warmup %d steps (%d backprop + %d notorch, sqrt-scaled %dx)\n",
 					stage, stageName, model.NEmbd, model.NLayer, model.NHead, effectiveWarmup, backpropSteps, notorchDeltaSteps, warmupScale)
 				// Phase A: backprop with progressive sequence length (short→full)
 				earlySteps := int(float64(backpropSteps) * 0.4)
 				midSteps := int(float64(backpropSteps) * 0.3)
 				lateSteps := backpropSteps - earlySteps - midSteps
-				ntWarmupTrain(model, tok, docs, earlySteps, 8)   // very short seqs, batch=1
-				ntWarmupTrain(model, tok, docs, midSteps, 16)    // short seqs, batch=1
-				ntWarmupTrain(model, tok, docs, lateSteps, 32)   // medium seqs, batch=1
+				ntWarmupTrain(model, tok, docs, earlySteps, 8) // very short seqs, batch=1
+				ntWarmupTrain(model, tok, docs, midSteps, 16)  // short seqs, batch=1
+				ntWarmupTrain(model, tok, docs, lateSteps, 32) // medium seqs, batch=1
 				model.lastWarmupStage = stage
 				SaveCheckpoint(model, tok, "")
 			} else {
@@ -6685,7 +6673,7 @@ func main() {
 			if !model.MaybeGrowArchitecture() {
 				break // corpus too small for next stage, or already at max
 			}
-			ntOnGrowth() // reset the notorch tape — Net2Net changed dims (06_PLAN S1)
+			ntOnGrowth()                    // reset the notorch tape — Net2Net changed dims (06_PLAN S1)
 			model.growthFreezeRemaining = 0 // skip freeze during init — we're about to warmup anyway
 
 			// Rebuild corpus field after growth (vocab may have expanded)
