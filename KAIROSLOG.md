@@ -1,5 +1,13 @@
 ## LOG
 
+### 2026-07-01 — browser front `index.html` + Rust `Cargo.toml` + full-pipeline smoke
+
+- Transferred molequla's `index.html` → repo root (scrubbed molequla→kairos). Paths configured via `<base href="roots/">`: `<script src="kairos.js">` → `roots/kairos.js`, logo `<img src="../assets/kairos.jpg">` → `assets/kairos.jpg`, and the front JS `fetch("kairos.txt")` / `"nonames_<element>.txt"` → `roots/kairos.txt` / `roots/nonames_*.txt`.
+- Added `Cargo.toml` (root) so the Rust port builds: `[[bin]] path = "roots/kairos.rs"`, deps `rusqlite`(bundled)/`serde`/`serde_json`/`rand`. `cargo check` → Finished (21 dead-code warnings, no errors).
+- Full-pipeline smoke (tool-verified): C `gcc` 140864B · JS `node --check` · Rust `cargo check` Finished · Go `CGO_ENABLED=1 go build ./roots` 9.9 MB · trainer `kairos_train.c` loss `5.58→4.09`/10 steps · `kairos.aml` `amlc` compile + run · `index.html` paths resolve.
+- Codex audit: index.html base/path resolution, no other relative paths, no molequla residue, Cargo.toml bin+deps — all PASS, no FAILs.
+- NEXT: RunPod A40 — real cross-platform build (linux cgo / CUDA) + the first mini-Kairos training run (needs the 6-point brief + the 5 raw chats).
+
 ### 2026-07-01 — resonance heart: C notorch trainer + `kairos.aml` inference
 
 - `ariannamethod/kairos_train.c` — from-scratch trainer for the Kairos resonance/Janus arch on the notorch tape + Chuck: `seq_embedding → per layer {parametric RMSNorm → Q/K/V + RoPE → content MHA + RRPRAM-lowrank (op33) blended by a per-head sigmoid gate → WO residual → RMSNorm → SwiGLU} → final RMSNorm → lm_head → cross_entropy`. Writes a `K01` checkpoint. v1 tokenizer = byte-level (vocab 256), dims via `-D` defines. Verified: compiles against `libkairos`; trains (loss `5.5651 → 3.8913` in 20 steps — start ≈ ln(256), real gradient).
