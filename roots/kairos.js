@@ -3701,16 +3701,7 @@ async function awaken() {
     await DB.open();
     logUI("[db] IndexedDB memory opened.");
 
-    // Check if this is a child organism (spawned via mitosis)
     const urlParams = new URLSearchParams(location.search);
-    const childOrganismId = urlParams.get("organism");
-    let birthConfig = null;
-    if (childOrganismId) {
-        birthConfig = await idbGet("births", childOrganismId);
-        if (birthConfig) {
-            logUI(`[ecology] Child organism ${childOrganismId} — born from ${birthConfig.parent_id}`);
-        }
-    }
 
     // Element → corpus path: each element eats its own food
     const cliElement = urlParams.get("element");
@@ -3811,7 +3802,7 @@ async function awaken() {
     _syntracker = new SyntropyTracker();
 
     // Swarm ecology: register in BroadcastChannel mesh
-    const organismId = childOrganismId || `org_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const organismId = `org_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     _swarm = new SwarmRegistry(organismId);
     _swarm.register();
     // Give peers a moment to respond, then discover
@@ -3823,11 +3814,6 @@ async function awaken() {
         logUI("[ecology] First organism in the swarm.");
     }
 
-    // Child: inherit burst_history from parent
-    if (birthConfig && birthConfig.burst_history) {
-        _syntracker.burstHistory = birthConfig.burst_history.slice();
-        logUI(`[ecology] Inherited ${_syntracker.burstHistory.length} burst records from parent.`);
-    }
 
     // Clean up swarm on tab close
     window.addEventListener("beforeunload", () => {

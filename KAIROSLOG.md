@@ -1,5 +1,13 @@
 ## LOG
 
+### 2026-07-01 — construction-audit fixes, wave 1: coherence wall on, colony leftovers cut
+
+- A Codex construction (design) audit found the project is an architectural fork — two organisms (the Go/ports molequla stack with BPE/overlay/growth/DNA, and the new C/AML resonance heart with byte-level/no-overlay) that share no weights/tokenizer/lifecycle — plus P0–P2 problems. This is wave 1: the clear, fork-independent fixes.
+- **P0 (coherence wall was gated off):** `CorpusLogitOverlay` default `false → true` (`roots/kairos.go:275`). The Q-metaweights overlay — self-fading by logit magnitude (`metaweights_overlay.go:16`, weightless→trained gate) — is now active by default, so the mini-Kairos speaks from zero and the birth-corpus stays clean instead of the wall being CLI-gated and off.
+- **P2 (dead colony leftovers):** cut `MaxOrganisms` (field + init, the divide cap, read nowhere after the resnya) from `kairos.go`; cut the JS mitosis child-birth reader (`birthConfig` / `childOrganismId` / burst inheritance) from `kairos.js`, keeping `urlParams` for element selection.
+- Verified: Go cgo build green, JS `node --check` OK.
+- **STILL OPEN — the load-bearing builds, sequenced:** (1) resolve the fork canon (read: minis = Go organism, Kairos = the AML heart, shared BPE); (2) BPE in the C heart (replace byte-level, grab RRPRAM `resonance-bpe.c`); (3) Q-overlay coherence in the C heart; (4) the real live-dialogue DNA bus (A→B utterance chain into `kairos.txt`) + maturation metric + birth-when-mature; (5) path/corpus contract; (6) datasets (blocked on the 5 chats + recursion mixing). Level-2 (limpha, multi-weight) after the born single-weight personality.
+
 ### 2026-07-01 — browser front `index.html` + Rust `Cargo.toml` + full-pipeline smoke
 
 - Transferred molequla's `index.html` → repo root (scrubbed molequla→kairos). Paths configured via `<base href="roots/">`: `<script src="kairos.js">` → `roots/kairos.js`, logo `<img src="../assets/kairos.jpg">` → `assets/kairos.jpg`, and the front JS `fetch("kairos.txt")` / `"nonames_<element>.txt"` → `roots/kairos.txt` / `roots/nonames_*.txt`.

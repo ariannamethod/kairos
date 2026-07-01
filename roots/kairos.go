@@ -209,7 +209,6 @@ type Config struct {
 	OverloadLossHigh       float64 `json:"overload_loss_high"`        // adult mitosis: mean recent burst loss above this = overwhelmed (confidently-wrong)
 	OverloadLossEps        float64 `json:"overload_loss_eps"`         // adult mitosis: loss-delta floor; meanDelta > -eps = bursts not reducing loss
 	OverloadLossWindow     int     `json:"overload_loss_window"`      // adult mitosis: # recent bursts for lossOverload (decoupled from SyntropyWindow: adult bursts are ~17min apart, so 8 would take ~2.3h; entropy is per-tick, loss is per-burst)
-	MaxOrganisms           int     `json:"max_organisms"`             // cascade governor: hard ceiling on live colony size, checked before divide (0 = uncapped). The per-process 300s cooldown cannot bound a multi-process lineage; this is the OOM/SIGKILL backstop.
 	CheckpointMinInterval  float64 `json:"checkpoint_min_interval"`   // write-storm throttle: min seconds between DEFAULT-path (periodic) full-model JSON checkpoints (0 = no throttle). Explicit-path saves (mitosis parent ckpt) are never throttled.
 
 	// consciousness: per-token dissonance feedback
@@ -273,7 +272,7 @@ var CFG = Config{
 	BatchSize:              4,
 	SPACoherenceGate:       false,
 	SPAEmbedAlpha:          0.85, // Q's default (q/README.md:179)
-	CorpusLogitOverlay:     false,
+	CorpusLogitOverlay:     true,
 	MetaCBigram:            15.0, // Q's weightless default (q/README.md:53)
 	MetaCTrigram:           10.0, // Q's weightless default (q/README.md:53)
 	MetaCHebbian:           1.0,  // Q's weightless default (q/README.md:53, c_heb)
@@ -332,7 +331,6 @@ var CFG = Config{
 	OverloadLossHigh:       5.0,  // healthy adult QuickLoss ~3.6; overwhelmed adult 5.3 (resume) climbing to 8-9 under cross-graze → 5.0 floor captures the regime, clears healthy
 	OverloadLossEps:        0.05, // loss-delta within ±0.05 of zero = not improving
 	OverloadLossWindow:     3,    // 3 sustained high-loss adult bursts = overwhelmed (burst cadence ~17min at adult; 8 would take ~2.3h)
-	MaxOrganisms:           16,   // cascade cap: ≤16 live organisms (each is a full trainer process). Tunable; 0 disables.
 	CheckpointMinInterval:  30.0, // throttle periodic full-model checkpoints to ≤1/30s (coalesces the growth/burst storm). Tunable; 0 disables. Mitosis ckpt (explicit path) bypasses.
 
 	// consciousness defaults
