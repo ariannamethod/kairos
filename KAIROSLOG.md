@@ -1,5 +1,29 @@
 ## LOG
 
+### 2026-07-02 — Phase 1 "each organism sound": BPE probe-cap (1A) + G2 wall verified present in all four ports (1B)
+
+**1A — BPE probe-cap guard (`kairos_train.c`).** The learn-once BPE hash-probe loop
+(`bpe_learn_merges`, `kairos_train.c:99-108`) now bounds its linear probe (`probes < HS`,
+skip-on-full) so it is provably terminating even on a full table — the robustness gap
+the audit named. Distinct adjacent pairs (<= n-1 ≈ 51k) can never fill `HS = 2^22`, so
+behavior is byte-identical at our scale: a rebuild + run reproduced 1024 merges → vocab
+1280 → 14489 tokens with the split intact. Codex audit: 4/4 PASS (terminating, no OOB,
+byte-identical at scale, no bookkeeping corruption).
+
+**1B — G2 "coherence-from-zero wall": verified present in every port, not ported.**
+Reading all four ports first-hand (Codex-confirmed 4/4 on the C claim) showed the audit's
+"overlay absent in C/Rust/JS (grep 0 symbols) → port to parity" was a symbol-NAME artifact.
+The wall stands in all four, on by default, self-fading — Go `MetaweightsOverlay`
+(logit-space, 5-signal, `metaweights_overlay.go:182`); C + Rust an identical "adaptive
+corpus blend" (same `model_alpha = 1/(1+exp(-corpus_fade_k*(corpus_fade_threshold-entropy)))`,
+70/30 n-gram/cooccur — `kairos.c:2717-2869`, `kairos.rs:1922-1959`); JS field-speech
+(`corpusGenerate`/`sampleNext`, `kairos.js:741,644`). Building Go's overlay into C would
+duplicate an existing mechanism, so it was NOT built. The one real difference (not a gap):
+Go additionally carries prophecy + destiny signals; enriching C/Rust with those is an
+optional decision for Oleg, not a missing wall. Honest boundary: an empirical zero-warmup
+run per port would be the gold-standard confirmation of the mechanism proven here by
+reading + Codex.
+
 ### 2026-07-02 — Fable audit follow-through: val-split (G4) run-proven end-to-end
 
 The Fable audit (2026-07-01, +continuation 2026-07-02) flagged the born-Kairos
@@ -134,7 +158,7 @@ then appends cross-entropy (`kairos_train.c:249`), inference returns logits
 ### 2026-07-01 — vendor: fresh notorch + AML engine in `ariannamethod/`
 
 - Created the `ariannamethod/` vendor at the repo root with the updated engine from upstream `notorch` (`b1959f4`) + `ariannamethod.ai` AML core (`9d80ac3`), replacing molequla's May-14 snapshot.
-- notorch `4739 → 5354` lines: packed-GGUF `nt_qmatvec` (×7), op33 RRPRAM-lowrank, Chuck optimizer, Metal backend (`notorch_metal.{h,mm}`), GGUF loader (`gguf.{c,h}`), vision (`notorch_vision.h` + `stb_image.h`). AML core `8000 → 8423` lines (`ariannamethod.{c,h}` + CUDA). `notorch_simd.h` fresh (`632 → 661`); `notorch_simd_scalar.h` unchanged.
+- notorch `4739 → 5354` lines: packed-GGUF `nt_qmatvec` (×7), op33 RRPRAM-lowrank, Chuck optimizer, Metal backend (`notorch_metal.{h,mm}`), GGUF loader (`gguf.{c,h}`), vision (`notorch_vision.h` + `stb_image.h`). AML core `8000 → 8423` lines (`ariannamethod.{c,h}` + CUDA). `notorch_simd.h` fresh (`632 → 661`); `notorch_simd_scalar.h` unchanged. (Correction: op33 RRPRAM-lowrank and Chuck already existed in molequla's May-14 vendor; the genuinely new pieces over it are Metal, the GGUF loader, vision, and packed `nt_qmatvec` — see "Engine facts (for the record)" in the 2026-07-01 plan-of-record entry above.)
 - Makefile rebranded to Kairos: builds `libkairos.{so,dylib}` from `ariannamethod.c + notorch.c` (kept the proven combined-lib build pattern + SIMD path; dropped the dangling `test_aml.c` target that was not vendored). Excluded the Python tier (`method.py`/`sentinel.py`/`__init__.py` — per Oleg) and build artifacts (`.o`/`.dylib`, now gitignored).
 - Verified: `make` builds `libkairos.dylib` (317392 B) from the fresh sources (deprecation warnings only, no errors). Added repo `.gitignore` (artifacts + internal logs).
 

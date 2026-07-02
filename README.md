@@ -31,12 +31,13 @@ personality, inviolable).
 Trainer and inference share one forward through the logits: parametric RMSNorm → content
 multi-head attention (RoPE) **⊕** RRPRAM low-rank attention (op 33) blended by a per-head
 sigmoid gate → SwiGLU → final RMSNorm → lm_head. Two faces of attention — content and
-resonance — is the Janus. The trainer then appends cross-entropy; inference returns logits
+resonance — is the Janus; the per-head gate is frozen at 0.5 (constant 50/50) this version, a
+learnable on-tape gate a follow-up. The trainer then appends cross-entropy; inference returns logits
 to sampling, wrapped by the AML Dario field overlay (`am_apply_destiny/attention_to_logits`).
 
-- **Tokenizer:** fixed learn-once BPE (1024 merges → vocab 1280), written into the `K02`
-  checkpoint (magic `K02\n` + cfg + merge table + tensors) and read back byte-for-byte by
-  both trainer and heart.
+- **Tokenizer:** fixed learn-once BPE (1024 merges → vocab 1280), written by the trainer
+  into the `K02` checkpoint (magic `K02\n` + cfg + merge table + tensors) and read back
+  byte-for-byte by the heart.
 - **Stop criterion:** a held-out 90/10 validation split (`eval_val`, forward-only, Chuck
   state untouched). The born Kairos stops on a healthy val, not on iteration count; the
   minis may overfit their element voice on train.

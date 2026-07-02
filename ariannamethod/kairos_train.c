@@ -99,7 +99,12 @@ static void bpe_learn_merges(const unsigned char *data, int len, int nm) {
         for (int i = 0; i + 1 < n; i++) {
             long key = (long)tok[i] * 100000L + tok[i + 1];
             long h = ((key * 2654435761UL) >> 11) & (HS - 1);
-            while (hkey[h] != -1 && hkey[h] != key) h = (h + 1) & (HS - 1);
+            /* probe-cap: distinct adjacent pairs (<= n-1) can never fill HS = 2^22 at
+               our vocab scale, but bound the linear probe so a full table can never
+               spin forever or read past the slots. If somehow full, skip this pair. */
+            long probes = 0;
+            while (hkey[h] != -1 && hkey[h] != key && probes < HS) { h = (h + 1) & (HS - 1); probes++; }
+            if (probes >= HS) continue;
             hkey[h] = key; hcnt[h]++;
             if (hcnt[h] > bestCnt) { bestCnt = hcnt[h]; bestKey = key; }
         }

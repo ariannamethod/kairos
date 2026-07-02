@@ -6,9 +6,9 @@ import "math"
 // SPA — Sentence Phonon Attention — coherence-without-training pass.
 //
 // Pure-Go port of canonical AML's spa_embed + spa_connectedness ops
-// (~/arianna/ariannamethod.ai/core/ariannamethod.c, commit ef52cde).
+// (github.com/ariannamethod/ariannamethod.ai core/ariannamethod.c, commit ef52cde).
 // SPA is forward-only by design — Q's third pillar from
-// ~/arianna/q/README.md:177-179. Used to score per-sentence
+// github.com/ariannamethod/q README.md:177-179. Used to score per-sentence
 // connectedness so that weak sentences in a multi-sentence generation
 // can be flagged or reseeded with neighbor context.
 //

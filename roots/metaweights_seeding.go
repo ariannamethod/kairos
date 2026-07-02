@@ -5,7 +5,7 @@ import "math"
 // ═══════════════════════════════════════════════════════════════════════════════
 // MetaWeight embedding seeding — postgpt's «tokenizer IS training» trick.
 //
-// Ported from ~/arianna/postgpt/postgpt.c:545-570. The load-bearing mechanism
+// Ported from github.com/ariannamethod/postgpt postgpt.c:545-570. The load-bearing mechanism
 // that lets postgpt produce coherent text at zero training: token embeddings
 // are biased by Hebbian co-occurrence before the first forward pass, and the
 // LM head is biased by unigram × wte. Carries corpus structure into the model

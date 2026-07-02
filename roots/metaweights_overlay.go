@@ -5,7 +5,7 @@ import "math"
 // ═══════════════════════════════════════════════════════════════════════════════
 // Q-style metaweights overlay — raw-probability, dynamic-gate, coherence-without-training
 //
-// Ported from ~/arianna/q/postgpt_q.c:1305-1395, the reference implementation
+// Ported from github.com/ariannamethod/q postgpt_q.c:1305-1395, the reference implementation
 // of «coherence emerges from corpus statistics» pattern. The mechanism mixes
 // the model's untrained logits with five statistical signals (Hebbian / prophecy
 // / destiny / bigram / trigram) added as RAW probability values, not log-probs.
