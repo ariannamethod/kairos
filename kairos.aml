@@ -1,9 +1,10 @@
 # kairos.aml — Kairos resonance / Janus heart. INFERENCE.
 #
-# Loads the K01 checkpoint written by ariannamethod/kairos_train.c and runs the
+# Loads the K02 checkpoint written by ariannamethod/kairos_train.c and runs the
 # same resonance forward — parametric RMSNorm → content MHA(RoPE) + RRPRAM
 # low-rank (op 33) blended by a per-head sigmoid gate → SwiGLU — forward-only on
-# the notorch tape, so the inference arch is byte-identical to the trainer.
+# the notorch tape: same op sequence as the trainer through the logits (the
+# trainer then appends cross-entropy; here the logits go to sampling).
 # Sampling is wrapped by the AML Dario field (coherence overlay), like
 # resonance.aml. Two faces of the attention = Janus: content + resonance(RRPRAM).
 #

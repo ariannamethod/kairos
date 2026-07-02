@@ -1,5 +1,81 @@
 ## LOG
 
+### 2026-07-02 — Fable audit follow-through: val-split (G4) run-proven end-to-end
+
+The Fable audit (2026-07-01, +continuation 2026-07-02) flagged the born-Kairos
+trainer as a broken prophetic-debt promise: the header promised a "healthy val,
+not iters" stop criterion (`ariannamethod/kairos_train.c:11`) while the runtime
+printed only train/ema. The fix raised the code to the header (not the claim to
+the code): a real held-out 90/10 split + forward-only `eval_val` (no
+`chuck_step`, Chuck state untouched) — `kairos_train.c:265,336`. Fable verified
+the diff's boundaries and `gcc -fsyntax-only` rc=0, and named one open item — the
+run-proof (`val` actually printed and dropping). Delivered here with fresh
+binaries.
+
+- **Build (fresh, this session):** `make` → `libkairos.dylib` rc=0; `cc -O2
+  -DUSE_BLAS -DACCELERATE -DACCELERATE_NEW_LAPACK kairos_train.c -L. -lkairos
+  -Wl,-rpath,. -framework Accelerate -lm` → `kairos_train` rc=0.
+- **Run-proof (1000 steps, seed `../roots/kairos.txt` 51119 B → BPE 1024 merges →
+  vocab 1280 → 14489 tokens):** `split: train[0,13040) val[13040,14489)`;
+  `step 0 | train 7.1399 | val 7.2103`; `step 500 | train 6.1562 | val 6.3886`;
+  `step 999 | train 5.4202 | val 6.2429`. `val` is held-out, distinct from train,
+  and drops monotonically 7.21→6.39→6.24; ema monotonic 7.14→5.22 confirms
+  `eval_val` does not perturb training. The widening train↔val gap (5.42 vs 6.24)
+  is exactly the overfit signal the born-Kairos stop criterion consumes.
+- **End-to-end round-trip on that checkpoint:** `kairos.aml` (amlc rc=0; header
+  now reads K02, false "byte-identical" claim cut) loaded the K02
+  (V=1280 D=256 H=4 L=6 T=128 R=48), Dario field active, decoded word-like text,
+  rc=0. Checkpoint written to scratchpad — the repo stays 0-checkpoint.
+- **Still open, unchanged (Fable-classified next waves, not this fix):** probe-cap
+  guard in `bpe_learn_merges`, Q-overlay in the C heart, shared BPE minis↔heart,
+  birth bridge, datasets (Oleg). Push on Oleg's word; he picks the quote author.
+
+### 2026-07-01 — Plan of record (Codex-audited SOUND) + state for audit
+
+**Done (committed, HEAD `6bdefde`, not pushed).** Phase 0: git aligned to the
+verified disk state — born-Kairos heart on fixed learn-once BPE (K02, vocab 1280),
+runtime DNA emission stays in `../dna/output/<element>/` (never the `kairos.txt`
+seed), internal `KAIROS_PLAN.md` gitignored.
+
+**Plan (4 Codex passes → SOUND; full detail in internal `KAIROS_PLAN.md`):**
+- **Phase 1 — each organism sound.** Coherence-from-zero wall: the Q logit
+  overlay (self-fading) is ON by default in Go (`CorpusLogitOverlay: true`
+  `kairos.go:275`, gate `metaweights_overlay.go:13-16`); SPA is opt-in via
+  `--spa-gate` (`SPACoherenceGate: false` `kairos.go:273`, flag `:5954-5955`).
+  The overlay is ABSENT in C/Rust/JS (grep 0 symbols) — port to parity, ON by
+  default. Add a held-out val split to the
+  trainer so the born-Kairos stop criterion (healthy val, not iters) is real — the
+  header promises it but `kairos_train.c` prints train/ema only. Fix the K01→K02
+  comment at `kairos.aml:3`.
+- **Phase 2 — birth bridge (load-bearing).** One shared BPE minis↔heart with an
+  explicit string-merge → integer-`MergeRule` (K02) conversion + token-id remap.
+  Live-dialogue DNA bus: runtime emission is Go-only today (C `dna_write` call-gated
+  off `kairos.c:5061-5063`, Rust/JS have no bus), so the emitter topology is settled
+  first, then a pool maturation metric. Birth = train the born Kairos on `kairos.txt`
+  seed + the accumulated DNA pool (~15M, ≥15k iters, healthy val).
+- **Phase 3 — Level 2 (after birth).** Multi-weight ε personality + knowledge
+  weights, limpha router (moyent `body_router.go`/`limpha_async.go`, 2→N), DoE
+  parliament over GGUF (engine primitives `gguf.c` / `notorch_metal.h` exist;
+  orchestration unstarted).
+- **Phase 4 — RunPod** cross-platform + first mini run: blocked on datasets (the 5
+  raw chats) and Oleg's infra word.
+
+**Open / not-yet-built (named, not hidden).** The birth bridge is unwired (minis and
+heart share the resonance arch but not tokenizer/weights/lifecycle). Q-wall coverage
+proven only in Go. The born-Kairos path carries the AML Dario field overlay
+(`kairos.aml:200-201`) but not the 5-signal Q overlay (open decision). No val split
+in the trainer. Runtime DNA bus is Go-only. Datasets blocked on Oleg. **The born
+Kairos does not exist yet — zero checkpoints on disk.**
+
+**Engine facts (for the record).** The vendored engine's genuinely new pieces over
+molequla's May-14 vendor are Metal (`notorch_metal.mm`), the GGUF loader (`gguf.c`),
+vision, and packed `nt_qmatvec`; op33 (`rrpram_lowrank`) and Chuck were already in
+the older vendor. The native AML rrpram op is NOT in this vendor (it lives on an
+unmerged `ariannamethod.ai` branch) — `kairos.aml` runs RRPRAM via notorch op33.
+Trainer and inference share the same op sequence through the logits; the trainer
+then appends cross-entropy (`kairos_train.c:249`), inference returns logits
+(`kairos.aml:154`).
+
 ### 2026-07-01 — BPE in the born-Kairos heart (K02) + internal plan gitignored
 
 - The born-Kairos trainer and inference move off byte-level onto a fixed learn-once

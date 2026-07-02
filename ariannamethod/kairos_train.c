@@ -257,6 +257,33 @@ static float lr_at(int step, int steps, float base) {
     return base * 0.5f * (1.0f + cosf(3.14159265f * p));
 }
 
+/* Held-out validation loss: forward-only over nwin evenly-spaced windows in the
+ * val region [lo,hi). No backward, no chuck_step — Chuck state is untouched (the
+ * positional param slots are re-registered identically but never stepped). The
+ * born-Kairos stop criterion is a healthy val (not iters); minis may overfit on
+ * train. Returns -1 if the val region is too small for one window. */
+static float eval_val(Model *m, const int *toks, long lo, long hi, int T, int nwin) {
+    long span = hi - lo - T - 1;
+    if (span < 1) return -1.0f;
+    double acc = 0.0; int cnt = 0;
+    float tok[K_SEQ], tgt[K_SEQ];
+    for (int w = 0; w < nwin; w++) {
+        long start = lo + (long)((double)w / (double)nwin * (double)span);
+        for (int t = 0; t < T; t++) { tok[t] = (float)toks[start + t]; tgt[t] = (float)toks[start + t + 1]; }
+        nt_tape_start();
+        Idx ix; register_params(m, &ix);
+        nt_tensor *tokT = nt_tensor_new(T); memcpy(tokT->data, tok, T * sizeof(float));
+        nt_tensor *tgtT = nt_tensor_new(T); memcpy(tgtT->data, tgt, T * sizeof(float));
+        int tokIdx = nt_tape_record(tokT, NT_OP_NONE, -1, -1, 0);
+        int tgtIdx = nt_tape_record(tgtT, NT_OP_NONE, -1, -1, 0);
+        nt_tensor_free(tokT); nt_tensor_free(tgtT);
+        int lossIdx = forward(m, &ix, tokIdx, tgtIdx, T);
+        acc += entry_scalar(lossIdx); cnt++;
+        nt_tape_clear();
+    }
+    return cnt ? (float)(acc / cnt) : -1.0f;
+}
+
 static void save_ckpt(Model *m, const char *path) {
     FILE *f = fopen(path, "wb");
     if (!f) { fprintf(stderr, "[kairos_train] cannot write %s\n", path); return; }
@@ -302,6 +329,18 @@ int main(int argc, char **argv) {
     fprintf(stderr, "[kairos_train] BPE vocab=%d | %ld bytes -> %ld tokens | D=%d H=%d L=%d T=%d R=%d\n",
             g_vocab, n, ntok, K_DIM, K_HEADS, K_LAYERS, K_SEQ, K_RANK);
 
+    /* Held-out val split: last 10% of tokens. The born Kairos stops on a healthy
+     * val (not iters); minis may overfit train. If either the train region or the
+     * val slice is too small for one window, fall back to training on the FULL
+     * corpus (no val) — never silently withhold data. */
+    long train_end = (long)((double)ntok * 0.9);
+    int have_val = (train_end >= (long)(K_SEQ + 2)) && ((ntok - train_end) >= (long)(K_SEQ + 2));
+    if (!have_val) train_end = ntok;                 /* no val → train on everything */
+    long val_lo = train_end, val_hi = ntok;          /* val_lo == val_hi when no val */
+    fprintf(stderr, "[kairos_train] split: train[0,%ld) val[%ld,%ld) %s\n",
+            train_end, val_lo, val_hi,
+            have_val ? "" : "(val region too small — training on full corpus)");
+
     srand((unsigned)time(NULL));
     Model m; model_init(&m);
     float base_lr = 3e-4f, ema = 0.0f;
@@ -309,7 +348,10 @@ int main(int argc, char **argv) {
     float tok[K_SEQ], tgt[K_SEQ];
 
     for (int step = 0; step < steps; step++) {
-        long start = (long)((double)rand() / ((double)RAND_MAX + 1.0) * (double)(ntok - T - 1));
+        /* upper bound train_end - T (exclusive rand < 1.0) → starts [0, train_end-T-1],
+           so the last legal window (target reads train_end-1) is sampled; no OOB, no
+           1-token gap before the val region. */
+        long start = (long)((double)rand() / ((double)RAND_MAX + 1.0) * (double)(train_end - T));
         for (int t = 0; t < T; t++) { tok[t] = (float)toks[start + t]; tgt[t] = (float)toks[start + t + 1]; }
 
         nt_tape_start();
@@ -328,9 +370,18 @@ int main(int argc, char **argv) {
         nt_tape_clear();
 
         ema = (step == 0) ? loss : 0.98f * ema + 0.02f * loss;
-        if (step % 100 == 0 || step == steps - 1)
+        if (step % 500 == 0 || step == steps - 1) {
+            float val = have_val ? eval_val(&m, toks, val_lo, val_hi, T, 16) : -1.0f;
+            if (val >= 0.0f)
+                fprintf(stderr, "step %6d | train %.4f | val %.4f | ema %.4f | lr %.2e\n",
+                        step, loss, val, ema, lr_at(step, steps, base_lr));
+            else
+                fprintf(stderr, "step %6d | train %.4f | ema %.4f | lr %.2e\n",
+                        step, loss, ema, lr_at(step, steps, base_lr));
+        } else if (step % 100 == 0) {
             fprintf(stderr, "step %6d | train %.4f | ema %.4f | lr %.2e\n",
                     step, loss, ema, lr_at(step, steps, base_lr));
+        }
     }
 
     save_ckpt(&m, out);
