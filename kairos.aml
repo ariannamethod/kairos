@@ -196,7 +196,34 @@ static void kairos_generate(Kairos *k, const char *prompt, int n, float temp) {
         int li = kairos_forward(k, win, W);
         k_last_logits(li, W, k->V, logits);   /* prediction at the last position */
         nt_tape_clear();
-        /* AML Dario field overlay on the logits (coherence): destiny attraction
+        /* G3 — coherence-from-zero wall: tilt the logits toward the corpus co-occurrence
+         * of the current context (Hebbian H-term over the ingested field), self-fading as
+         * the transformer becomes coherent. model_alpha = sigmoid(k*(thr - entropy)) with
+         * the minis' constants (corpus_fade_k=3, thr=1.5): high entropy (weak model) →
+         * fade≈1 → full corpus pull; low entropy (trained) → fade→0 → the model leads. */
+        {
+            float tt = (temp > 1e-4f) ? temp : 1e-4f;
+            float mx = logits[0]; for (int j = 1; j < k->V; j++) if (logits[j] > mx) mx = logits[j];
+            double sum = 0.0; for (int j = 0; j < k->V; j++) sum += exp((logits[j] - mx) / tt);
+            double ent = 0.0;
+            if (sum > 0.0) for (int j = 0; j < k->V; j++) {
+                double p = exp((logits[j] - mx) / tt) / sum;
+                if (p > 1e-12) ent -= p * log(p);
+            }
+            double model_alpha = 1.0 / (1.0 + exp(-3.0 * (1.5 - ent)));
+            if (model_alpha < 0.99) {
+                float *pre = malloc(sizeof(float) * k->V);
+                if (pre) {
+                    memcpy(pre, logits, sizeof(float) * k->V);
+                    am_ingest_tokens(&win[W - 1], 1);          /* ctx ring = last token; n=1 adds no cooc edges */
+                    am_apply_hebbian_to_logits(logits, k->V);  /* corpus co-occurrence pull */
+                    float fade = (float)(1.0 - model_alpha);
+                    for (int j = 0; j < k->V; j++) logits[j] = pre[j] + fade * (logits[j] - pre[j]);
+                    free(pre);
+                }
+            }
+        }
+        /* AML Dario field overlay on the logits (secondary): destiny attraction
          * + attention/co-occurrence bias, the field's contribution to sampling. */
         am_apply_destiny_to_logits(logits, k->V);
         am_apply_attention_to_logits(logits, k->V);
@@ -219,17 +246,39 @@ static void kairos_field_init(void) {
     if (rc != 0) fprintf(stderr, "[kairos] am_exec rc=%d (%s)\n", rc, am_get_error());
     fprintf(stderr, "[kairos] Dario field active (PROPHECY 12, DESTINY 0.35)\n");
 }
+
+/* G3 — coherence-from-zero wall for the born Kairos: ingest its corpus (seed + DNA
+ * pool) into the AML co-occurrence field so the Hebbian H-term can tilt generation
+ * toward corpus statistics while the transformer is still weak. Uses the SAME fixed
+ * BPE as the weights, so token ids match the model. */
+static void kairos_ingest_corpus(const char *path) {
+    if (!path || !*path) return;
+    FILE *f = fopen(path, "rb");
+    if (!f) { fprintf(stderr, "[kairos] corpus %s not found — field ungrounded\n", path); return; }
+    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+    if (sz <= 0) { fclose(f); return; }
+    unsigned char *buf = malloc((size_t)sz);
+    int *ids = malloc(sizeof(int) * ((size_t)sz + 1));
+    if (!buf || !ids || fread(buf, 1, (size_t)sz, f) != (size_t)sz) { free(buf); free(ids); fclose(f); return; }
+    fclose(f);
+    int nt = bpe_encode(buf, (int)sz, ids, (int)sz + 1);
+    am_ingest_tokens(ids, nt);
+    fprintf(stderr, "[kairos] ingested corpus %s: %ld bytes -> %d tokens (cooc field grounded)\n", path, sz, nt);
+    free(buf); free(ids);
+}
 }
 
 BLOOD MAIN {
 int main(int argc, char **argv) {
     const char *weights = "kairos.bin";
     const char *prompt  = "The ";
+    const char *corpus  = "kairos.txt";   /* born-Kairos corpus for the coherence wall (-c) */
     int   n    = 200;
     float temp = 0.8f;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-w") && i + 1 < argc)      weights = argv[++i];
         else if (!strcmp(argv[i], "-p") && i + 1 < argc) prompt  = argv[++i];
+        else if (!strcmp(argv[i], "-c") && i + 1 < argc) corpus  = argv[++i];
         else if (!strcmp(argv[i], "-n") && i + 1 < argc) n       = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-t") && i + 1 < argc) temp    = atof(argv[++i]);
     }
@@ -237,6 +286,7 @@ int main(int argc, char **argv) {
     Kairos k = {0};
     if (kairos_load(&k, weights)) return 1;
     kairos_field_init();
+    kairos_ingest_corpus(corpus);   /* ground the coherence wall in corpus statistics */
     kairos_generate(&k, prompt, n, temp);
     return 0;
 }

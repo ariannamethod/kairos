@@ -1825,6 +1825,28 @@ impl GPT {
         // Frequency/presence penalty tracking
         let mut token_counts: HashMap<usize, usize> = HashMap::new();
 
+        // E.4 — enrich the coherence-from-zero wall with the Go overlay's two extra
+        // signals (metaweights_overlay.go:121-146,304-350). Destiny = cosine(wte[v],
+        // gammaDir), computed once (weights are stable during generation). Prophecy =
+        // a persistent expectation field, seeded from the corpus distribution then aged
+        // per step and collapsed on fulfilment. Both ride inside corpus_probs, so the
+        // existing model_alpha self-fade carries them — they vanish once the model leads.
+        let destiny: Vec<f64> = {
+            let (gdir, gmag) = self.gamma_contrastive_projection();
+            let wte = &self.base["wte"];
+            if gmag > 1e-8 && gdir.len() == wte.nin {
+                (0..wte.nout).map(|v| {
+                    let row = wte.row(v);
+                    let mut dot = 0.0; let mut en = 0.0;
+                    for j in 0..wte.nin { dot += gdir[j] * row[j]; en += row[j] * row[j]; }
+                    en = (en + 1e-10).sqrt();
+                    if en > 1e-8 { dot / en } else { 0.0 }
+                }).collect()
+            } else { Vec::new() }
+        };
+        let mut prophecy: Vec<f64> = Vec::new(); // seeded lazily, aged per step, collapsed on sample
+        let prophecy_decay = 0.95;
+
         for step in 0..cfg.max_gen_tokens {
             let start = if ids.len() > self.block_size { ids.len() - self.block_size } else { 0 };
             let window = &ids[start..];
@@ -1926,11 +1948,40 @@ impl GPT {
                     // Pass enough context for co-occurrence window (at least cooccur_window_size tokens)
                     let ctx_len = cfg.cooccur_window_size.max(3);
                     let context: Vec<usize> = ids[ids.len().saturating_sub(ctx_len)..].to_vec();
-                    let corpus_probs = field.sample_distribution(&context, self.tok.vocab_size);
+                    let mut corpus_probs = field.sample_distribution(&context, self.tok.vocab_size);
 
                     // Check if corpus has anything to say
                     let has_corpus = corpus_probs.iter().any(|&p| p > 0.0);
                     if has_corpus {
+                        // E.4 — prophecy: age the standing field else seed from the corpus
+                        // distribution; then fold its normalised mass into corpus_probs.
+                        if !prophecy.is_empty() {
+                            for p in prophecy.iter_mut() { *p *= prophecy_decay; }
+                        } else {
+                            // seed from the normalised n-gram (sequential expectation), matching
+                            // the C port's ngram seed at roots/kairos.c:2861-2863 — not the full blend.
+                            let ng = field.sample_ngram_norm(&context, self.tok.vocab_size);
+                            if ng.iter().any(|&v| v > 0.0) { prophecy = ng; }
+                        }
+                        if !prophecy.is_empty() {
+                            let pt: f64 = prophecy.iter().sum();
+                            if pt > 0.0 {
+                                let n = corpus_probs.len().min(prophecy.len());
+                                for j in 0..n { corpus_probs[j] += 0.4 * prophecy[j] / pt; }
+                            }
+                        }
+                        // E.4 — destiny: gamma-aligned tokens (positive cosine half, normalised).
+                        if !destiny.is_empty() {
+                            let dt: f64 = destiny.iter().filter(|&&d| d > 0.0).sum();
+                            if dt > 0.0 {
+                                let n = corpus_probs.len().min(destiny.len());
+                                for j in 0..n { if destiny[j] > 0.0 { corpus_probs[j] += 0.15 * destiny[j] / dt; } }
+                            }
+                        }
+                        // renormalise corpus_probs to a distribution before the self-fading blend
+                        let ct: f64 = corpus_probs.iter().sum();
+                        if ct > 0.0 { for c in corpus_probs.iter_mut() { *c /= ct; } }
+
                         let n = probs.len().min(corpus_probs.len());
                         for j in 0..n {
                             probs[j] = model_alpha * probs[j] + (1.0 - model_alpha) * corpus_probs[j];
@@ -1966,6 +2017,7 @@ impl GPT {
             }
 
             let nxt = top_k_top_p_sample(&probs, cfg.top_k, cfg.top_p, cfg.min_p, cfg.typical_p);
+            if !prophecy.is_empty() && nxt < prophecy.len() { prophecy[nxt] = 0.0; } // collapse on fulfilment
             if nxt == self.tok.eos_id && step >= cfg.min_gen_tokens { break; }
             if nxt == self.tok.eos_id { continue; }
 
@@ -2293,6 +2345,29 @@ impl CooccurField {
 
     /// Returns the best n-gram distribution (4gram→trigram→bigram→unigram fallback),
     /// blended 70% n-gram + 30% co-occurrence window. Matches Go SampleNext/generation blend.
+    // Normalised n-gram distribution (4gram→trigram→bigram fallback) — the sequential
+    // expectation used to seed prophecy, matching the C port's ngram seed. No cooccur.
+    fn sample_ngram_norm(&self, context: &[usize], vocab_size: usize) -> Vec<f64> {
+        let len = context.len();
+        let mut ng: Option<&HashMap<usize, f64>> = None;
+        if len >= 3 {
+            let ctx = [context[len-3], context[len-2], context[len-1]];
+            if let Some(d) = self.fourgram_by_ctx.get(&ctx) { ng = Some(d); }
+        }
+        if ng.is_none() && len >= 2 {
+            if let Some(d) = self.trigram.get(&(context[len-2], context[len-1])) { ng = Some(d); }
+        }
+        if ng.is_none() && len >= 1 {
+            if let Some(d) = self.bigram.get(&context[len-1]) { ng = Some(d); }
+        }
+        let mut out = vec![0.0; vocab_size];
+        if let Some(d) = ng {
+            let total: f64 = d.values().sum();
+            if total > 0.0 { for (&tid, &cnt) in d { if tid < vocab_size { out[tid] = cnt / total; } } }
+        }
+        out
+    }
+
     fn sample_distribution(&self, context: &[usize], vocab_size: usize) -> Vec<f64> {
         let mut corpus_probs = vec![0.0; vocab_size];
         let len = context.len();

@@ -1,5 +1,35 @@
 ## LOG
 
+### 2026-07-08 — E.4 (enrich C+Rust with prophecy+destiny) + G3 (born-Kairos speaks coherently from zero)
+
+Per Oleg's decisions (07-08): E.4 = YES (enrich the minis), G3 = YES (Q coherence in the
+born path — organisms must speak coherently from zero). The Q coherence wall is load-bearing
+and stays in every port; nothing removed.
+
+**E.4 — the C and Rust minis' walls gain the two signals the Go overlay carried but they
+lacked.** The adaptive corpus blend (`roots/kairos.c:2717`, `roots/kairos.rs:1922`) now also
+folds in destiny (cosine(wte[v], gammaDir), computed once) + prophecy (persistent expectation
+field, seeded from the normalised n-gram, aged 0.95/step, collapsed on sample), then
+renormalises corpus_probs before the `model_alpha` self-fade — so both vanish as the
+transformer becomes coherent, parity with Go's `MetaweightsOverlay`. C `gcc` + Rust
+`cargo check` green; Codex 4/4 PASS (C) and PASS (Rust — after fixing the prophecy seed to
+n-gram-only for exact C parity, a Codex-flagged FAIL then re-audited PASS).
+
+**G3 — born-Kairos coherence-from-zero wall in `kairos.aml`.** The heart now ingests its
+corpus (seed + DNA pool) into the AML co-occurrence field (`kairos_ingest_corpus` →
+`am_ingest_tokens`, `-c` arg) and, per step, tilts the logits toward corpus co-occurrence of
+the current context (`am_apply_hebbian_to_logits`) with a smooth self-fade:
+`model_alpha = sigmoid(3*(1.5 - entropy))`, `fade = 1 - model_alpha` — full corpus pull when
+the model is weak, the model leads once trained. Context refresh via
+`am_ingest_tokens(&win[W-1], 1)` (n=1 adds ZERO cooc edges — no graph pollution). Uses only
+existing system-AML symbols (amlc links `/opt/homebrew/lib/libaml.a`) — no vendored-engine
+change. `make` + `amlc` green; Codex 4/4 PASS. Run-proof (600-step K02 on the seed): the
+grounded run emits word-boundaried fragments with the corpus's H:/A: scaffold, the ungrounded
+run collapses into run-together gibberish (`illiooodcausestuachmotslowand`); a near-random
+model A/B shows the same gap — the wall is the from-zero coherence source and self-fades as
+the born Kairos trains on the (coherent) pool. Current pull = the AML Hebbian logit tilt;
+the minis' 70% n-gram probability-blend is a stronger from-zero source if more is wanted.
+
 ### 2026-07-02 — Phase 1 "each organism sound": BPE probe-cap (1A) + G2 wall verified present in all four ports (1B)
 
 **1A — BPE probe-cap guard (`kairos_train.c`).** The learn-once BPE hash-probe loop

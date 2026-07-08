@@ -2608,6 +2608,8 @@ static double gpt_quick_loss(GPT *g, EvolvingTokenizer *tok, StrArr *docs, int n
 }
 
 /* Generate */
+static double *gpt_contrastive_projection(GPT *g, int *out_dim, double *out_mag); /* fwd — defined below */
+
 static char *gpt_generate(GPT *g, const char *prompt) {
     pthread_mutex_lock(&g->mu);
 
@@ -2648,6 +2650,32 @@ static char *gpt_generate(GPT *g, const char *prompt) {
 
     /* Frequency / presence penalty token tracking */
     int *token_counts = calloc(max_vocab, sizeof(int));
+
+    /* E.4 — enrich the coherence-from-zero wall with the two signals the Go overlay
+     * carries but this blend lacked: destiny + prophecy (metaweights_overlay.go:
+     * 121-146,304-350). Destiny = cosine(wte[v], gammaDir) — computed ONCE, weights
+     * are stable during generation. Prophecy = a persistent expectation field, seeded
+     * from the corpus n-gram then aged per step and collapsed on fulfilment. Both ride
+     * INSIDE corpus_probs, so the existing model_alpha self-fade carries them — they
+     * vanish as the transformer becomes coherent. */
+    double *destiny = NULL;
+    {
+        int gdim = 0; double gmag = 0.0;
+        double *gdir = gpt_contrastive_projection(g, &gdim, &gmag);
+        MatrixParam *wte_m = gpt_base(g, "wte");
+        if (gdir && gmag > 1e-8 && wte_m && gdim == wte_m->nin) {
+            destiny = calloc(max_vocab, sizeof(double));
+            for (int v = 0; v < max_vocab && v < wte_m->nout; v++) {
+                double dot = 0.0, en = 0.0;
+                for (int j = 0; j < gdim; j++) { double x = MAT_AT(wte_m, v, j); dot += gdir[j] * x; en += x * x; }
+                en = sqrt(en + 1e-10);
+                if (en > 1e-8) destiny[v] = dot / en;    /* cosine in [-1,1] */
+            }
+        }
+        free(gdir);
+    }
+    double *prophecy = NULL;                 /* seeded lazily, aged per step, collapsed on sample */
+    const double prophecy_decay = 0.95;
 
     for (int step = 0; step < CFG.max_gen_tokens; step++) {
         arena_reset(&G_arena);
@@ -2826,6 +2854,26 @@ static char *gpt_generate(GPT *g, const char *prompt) {
                             corpus_probs[i] += 0.3 * cooccur_sum[i] / cooccur_total;
                         }
                     }
+                    /* E.4 — prophecy: age the standing field, else seed once from the
+                     * n-gram; then fold its normalised mass into corpus_probs. */
+                    if (prophecy) {
+                        for (int i = 0; i < V; i++) prophecy[i] *= prophecy_decay;
+                    } else if (ngram_found && ngram_total > 0) {
+                        prophecy = calloc(max_vocab, sizeof(double));
+                        for (int i = 0; i < V; i++) prophecy[i] = ngram_probs[i] / ngram_total;
+                    }
+                    if (prophecy) {
+                        double pt = 0; for (int i = 0; i < V; i++) pt += prophecy[i];
+                        if (pt > 0) for (int i = 0; i < V; i++) corpus_probs[i] += 0.4 * prophecy[i] / pt;
+                    }
+                    /* E.4 — destiny: gamma-aligned tokens (positive half only, prob space). */
+                    if (destiny) {
+                        double dt = 0; for (int i = 0; i < V; i++) if (destiny[i] > 0) dt += destiny[i];
+                        if (dt > 0) for (int i = 0; i < V; i++) if (destiny[i] > 0) corpus_probs[i] += 0.15 * destiny[i] / dt;
+                    }
+                    /* renormalise corpus_probs to a distribution before the self-fading blend */
+                    { double ct = 0; for (int i = 0; i < V; i++) ct += corpus_probs[i];
+                      if (ct > 0) for (int i = 0; i < V; i++) corpus_probs[i] /= ct; }
                     /* Blend model probs with corpus */
                     double total_b = 0;
                     for (int i = 0; i < V; i++) {
@@ -2877,6 +2925,7 @@ static char *gpt_generate(GPT *g, const char *prompt) {
         }
 
         int nxt = top_k_top_p_sample(probs_buf, V, CFG.top_k, CFG.top_p, CFG.min_p, CFG.typical_p);
+        if (prophecy && nxt >= 0 && nxt < max_vocab) prophecy[nxt] = 0.0; /* collapse on fulfilment */
 
         if (nxt == g->tok->eos_id) {
             if (step >= CFG.min_gen_tokens) break;
@@ -2943,6 +2992,8 @@ static char *gpt_generate(GPT *g, const char *prompt) {
     free(probs_buf);
     free(scaled);
     free(token_counts);
+    free(destiny);
+    free(prophecy);
     ia_free(&ids); ia_free(&out_ids); ia_free(&recent); ia_free(&dec);
     for (int i = 0; i < kv->n_layers; i++) { free(kv->layers[i].keys); free(kv->layers[i].values); }
     free(kv->layers); free(kv);
