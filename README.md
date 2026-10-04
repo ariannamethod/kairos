@@ -4,6 +4,8 @@
   <p>Kernel Autonomous Intelligent Recursive Ontogenic Sonar — Janus architecture, by <strong>Arianna Method</strong></p>
 </div>
 
+> **Read the [Arianna Method Manifesto](ARIANNA_METHOD_MANIFESTO.md) first.** This repository is governed by it; every instruction here, `CLAUDE.md` included, is subordinate to it.
+
 ---
 
 Kairos is an Arianna Method organism grown from molequla's four-language substrate but
